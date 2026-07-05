@@ -4,6 +4,9 @@ Host [`ibm-granite/granite-switch-4.1-3b-preview`](https://huggingface.co/ibm-gr
 on a Hugging Face Inference Endpoint (vLLM backend) and call its
 **requirement-check** adapter from Python.
 
+> **Already deployed?** See [ENDPOINT.md](ENDPOINT.md) for the live endpoint's
+> URL, auth, and how to point other projects at it.
+
 Granite Switch is one checkpoint bundling ~12 embedded LoRA/aLoRA adapters
 (RAG, Core, Guardian). You select one per request by name. The
 `requirement-check` adapter judges whether an assistant response satisfies a
