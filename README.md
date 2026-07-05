@@ -1,4 +1,4 @@
-# granite-switch requirement-check demo
+# granite-switch endpoint and requirement-check test
 
 Host [`ibm-granite/granite-switch-4.1-3b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview) on a Hugging Face Inference Endpoint (vLLM backend) and call its **requirement-check** adapter from Python.
 
