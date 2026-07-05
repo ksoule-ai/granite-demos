@@ -9,7 +9,17 @@
       "Bash(awk '/def demo_requirement/{flag=1} flag{print} /^def demo_/{if\\(flag && !/requirement/\\){}}' /private/tmp/claude-501/-Users-ksoule-Library-CloudStorage-OneDrive-Personal-Documents-Claude-Developer-granite-demos/94e25446-b0b9-4f02-b87f-a0fcd2a3644a/scratchpad/granite-switch/tutorials/scripts/reference/run_adapter_generation_direct.py)",
       "Bash(awk '/^def _invoke/{flag=1} flag{print} flag&&/return/{if\\(++n>=1 && /return/\\){exit}}' /private/tmp/claude-501/-Users-ksoule-Library-CloudStorage-OneDrive-Personal-Documents-Claude-Developer-granite-demos/94e25446-b0b9-4f02-b87f-a0fcd2a3644a/scratchpad/granite-switch/tutorials/scripts/reference/run_adapter_generation_direct.py)",
       "Bash(awk '/^def _build_prompt/{flag=1} flag{print} flag&&/^def [a-z]/&&!/_build_prompt/{exit}' /private/tmp/claude-501/-Users-ksoule-Library-CloudStorage-OneDrive-Personal-Documents-Claude-Developer-granite-demos/94e25446-b0b9-4f02-b87f-a0fcd2a3644a/scratchpad/granite-switch/tutorials/scripts/reference/run_adapter_generation_direct.py)",
-      "Bash(python3 -m py_compile requirement_check.py)"
+      "Bash(python3 -m py_compile requirement_check.py)",
+      "Bash(grep -c \"hf_\" .env)",
+      "Bash(pip3 --version)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/pip list *)",
+      "Bash(.venv/bin/python requirement_check.py)",
+      "Bash(echo \".DS_Store\")",
+      "Bash(git rm *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
