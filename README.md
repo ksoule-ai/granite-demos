@@ -85,11 +85,12 @@ ghcr.io/<your-lowercase-username>/granite-switch-vllm:latest
    - **Health route:** `/health`
    - **Container Arguments:**
      ```
-     --model /repository --served-model-name ibm-granite/granite-switch-4.1-3b-preview --host 0.0.0.0 --enable-prompt-tokens-details
+     --model /repository --served-model-name ibm-granite/granite-switch-4.1-3b-preview --host 0.0.0.0 --chat-template /repository/chat_template.jinja --enable-prompt-tokens-details
      ```
      `--model /repository` points vLLM at the mounted weights (not the Hub repo id).
-     `--served-model-name` lets callers use the friendly id. `--enable-prompt-tokens-details`
-     turns on `cached_tokens` reporting (see Notes).
+     `--served-model-name` lets callers use the friendly id.
+     `--chat-template /repository/chat_template.jinja` was required to import the custom chat template correctly.
+     `--enable-prompt-tokens-details` turns on `cached_tokens` reporting (see Notes).
 4. **Authentication:** choose **Authenticated** (a.k.a. Protected). Reachable over
    the internet by anyone holding a valid HF token — i.e. you (for experiments) and a
    Space demo (token held server-side as a secret) — but closed to the anonymous
