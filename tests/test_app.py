@@ -2,12 +2,21 @@
 
 Run with:  .venv/bin/python -m pytest tests/ -v
 
+The demo's user journey is two turns per interaction:
+  1. the user picks a Core or Guardian adapter and submits a prompt
+  2. turn 1 generates a standard (no adapter) response
+  3. the adapter's follow-up prompt is auto-appended to the chat as a
+     user message
+  4. turn 2 generates the adapter's response to that follow-up
+
 What this covers without a GPU:
-  * every adapter name offered in the UI exists in the upstream catalog
+  * every adapter name offered in the UI exists in the upstream catalog,
+    and the UI offers exactly the Core + Guardian libraries
   * the Gradio UI builds under the pinned gradio version
-  * adapter-specific input fields (documents / requirements) toggle correctly
-  * respond() streams through the real TextIteratorStreamer machinery
-  * adapter control tokens, documents, and requirements all reach the prompt
+  * adapter-specific input fields (documents / rules) toggle correctly
+  * the two-turn flow: turn 1 has no adapter, the follow-up appears in the
+    history, turn 2 activates the adapter and is greedy
+  * documents and requirements reach the prompt where the protocol says
 What it cannot cover: real weights, real GPU generation quality. After the
 Space is up, send one message per adapter as a manual smoke test.
 """
@@ -20,8 +29,13 @@ import pytest
 
 CATALOG = json.loads((Path(__file__).parent / "adapter_catalog.json").read_text())
 CATALOG_ADAPTERS = set(CATALOG["adapters"])
+CORE_GUARDIAN_ADAPTERS = {
+    name for name, meta in CATALOG["adapters"].items()
+    if meta["library"] in ("core", "guardian")
+}
 DOC_ADAPTERS_IN_CATALOG = {
-    name for name, meta in CATALOG["adapters"].items() if meta.get("needs_documents")
+    name for name in CORE_GUARDIAN_ADAPTERS
+    if CATALOG["adapters"][name].get("needs_documents")
 }
 
 
@@ -29,16 +43,13 @@ DOC_ADAPTERS_IN_CATALOG = {
 
 def test_every_ui_adapter_exists_upstream(app_module):
     """A wrong adapter_name fails only at request time on the Space — catch it here."""
-    ui_adapters = [c for c in app_module.ADAPTER_CHOICES if not c.startswith("None")]
-    unknown = [a for a in ui_adapters if a not in CATALOG_ADAPTERS]
+    unknown = [a for a in app_module.ADAPTER_CHOICES if a not in CATALOG_ADAPTERS]
     assert not unknown, f"UI offers adapters the model does not have: {unknown}"
 
 
-def test_all_catalog_adapters_offered(app_module):
-    """The demo's point is showing all 12 adapters — don't silently drop any."""
-    ui_adapters = {c for c in app_module.ADAPTER_CHOICES if not c.startswith("None")}
-    missing = CATALOG_ADAPTERS - ui_adapters
-    assert not missing, f"Catalog adapters missing from the UI: {missing}"
+def test_ui_offers_exactly_core_and_guardian(app_module):
+    """The journey is scoped to the Core and Guardian libraries — no RAG, no gaps."""
+    assert set(app_module.ADAPTER_CHOICES) == CORE_GUARDIAN_ADAPTERS
 
 
 def test_doc_adapters_match_catalog(app_module):
@@ -50,6 +61,12 @@ def test_every_adapter_has_description(app_module):
         assert choice in app_module.ADAPTER_DESCRIPTIONS, f"no description for {choice}"
 
 
+def test_every_adapter_has_a_followup(app_module):
+    for choice in app_module.ADAPTER_CHOICES:
+        text = app_module.adapter_followup(choice, "some rule")
+        assert text and text.strip(), f"empty follow-up for {choice}"
+
+
 # ---------------------------------------------------------------- UI construction
 
 def test_ui_builds(app_module):
@@ -57,86 +74,151 @@ def test_ui_builds(app_module):
 
 
 def test_visibility_toggles(app_module):
-    # documents box shows exactly for doc-needing adapters
-    for adapter in CATALOG_ADAPTERS:
-        docs_upd, reqs_upd = app_module.update_visibility(adapter)
+    for adapter in CORE_GUARDIAN_ADAPTERS:
+        docs_upd, rules_upd = app_module.update_visibility(adapter)
         assert docs_upd["visible"] == (adapter in DOC_ADAPTERS_IN_CATALOG), adapter
-        assert reqs_upd["visible"] == (adapter == "requirement-check"), adapter
-    docs_upd, reqs_upd = app_module.update_visibility("None (standard chat)")
-    assert not docs_upd["visible"] and not reqs_upd["visible"]
+        assert rules_upd["visible"] == (
+            adapter in {"requirement-check", "policy-guardrails"}
+        ), adapter
 
 
-# ---------------------------------------------------------------- respond() streaming
+# ---------------------------------------------------------------- two-turn flow
 
-def run_respond(app_module, message="Hello", history=None, adapter="None (standard chat)",
-                docs="", requirements="", max_new_tokens=64, temperature=0.7):
+def drive(app_module, message="Hello", adapter="uncertainty", docs="", rules="",
+          max_new_tokens=64, temperature=0.7):
+    """Run one full interaction; return every yielded history state."""
+    history = [{"role": "user", "content": message}]
     return list(
-        app_module.respond(message, history or [], adapter, docs, requirements,
-                           max_new_tokens, temperature)
+        app_module.bot_respond(history, adapter, docs, rules,
+                               max_new_tokens, temperature)
     )
 
 
-def test_standard_chat_streams_growing_text(app_module):
-    chunks = run_respond(app_module)
-    assert chunks, "respond() yielded nothing"
-    for prev, cur in zip(chunks, chunks[1:]):
-        assert cur.startswith(prev), "stream must be cumulative"
-    assert chunks[-1].strip()
-    # no adapter kwargs leaked into a plain chat
-    assert "adapter_name" not in app_module._fake_tokenizer.last_template_kwargs
+def test_two_turn_shape(app_module):
+    states = drive(app_module)
+    final = states[-1]
+    assert [m["role"] for m in final] == ["user", "assistant", "user", "assistant"]
+    assert final[1]["content"].strip(), "turn-1 generation is empty"
+    assert final[3]["content"].strip(), "adapter response is empty"
 
 
-def test_history_becomes_messages(app_module):
-    history = [
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "second"},
-    ]
-    run_respond(app_module, message="third", history=history)
-    roles = [(m["role"], m["content"]) for m in app_module._fake_tokenizer.last_messages]
-    assert roles == [("user", "first"), ("assistant", "second"), ("user", "third")]
+def test_followup_appears_in_history_automatically(app_module):
+    states = drive(app_module, adapter="uncertainty")
+    final = states[-1]
+    assert final[2]["content"] == app_module.adapter_followup("uncertainty", "")
+    # the follow-up must be yielded to the UI before the adapter response streams
+    followup_first_seen = next(s for s in states if len(s) == 3)
+    assert followup_first_seen[2]["role"] == "user"
 
 
-@pytest.mark.parametrize("adapter", sorted(CATALOG_ADAPTERS))
+def test_turn1_has_no_adapter_turn2_has_adapter(app_module):
+    gen = app_module.bot_respond(
+        [{"role": "user", "content": "Hi"}], "guardian-core", "", "", 64, 0.7
+    )
+    for state in gen:
+        if len(state) == 3:  # follow-up just appended → turn 1 has finished
+            assert "adapter_name" not in app_module._fake_tokenizer.last_template_kwargs
+    assert app_module._fake_tokenizer.last_template_kwargs["adapter_name"] == "guardian-core"
+    assert "<|guardian-core|>" in app_module._fake_tokenizer.last_prompt
+
+
+def test_turn2_messages_are_task_response_followup(app_module):
+    drive(app_module, message="my task", adapter="uncertainty")
+    roles = [m["role"] for m in app_module._fake_tokenizer.last_messages]
+    assert roles == ["user", "assistant", "user"]
+    assert app_module._fake_tokenizer.last_messages[0]["content"] == "my task"
+    assert app_module._fake_tokenizer.last_messages[2]["content"] == (
+        app_module.adapter_followup("uncertainty", "")
+    )
+
+
+def test_streaming_is_cumulative_within_each_turn(app_module):
+    states = drive(app_module)
+    turn1 = [s[1]["content"] for s in states if len(s) == 2]
+    turn2 = [s[3]["content"] for s in states if len(s) == 4]
+    for chunk_list in (turn1, turn2):
+        assert chunk_list, "no streamed states for a turn"
+        for prev, cur in zip(chunk_list, chunk_list[1:]):
+            assert cur.startswith(prev), "stream must be cumulative"
+
+
+@pytest.mark.parametrize("adapter", sorted(CORE_GUARDIAN_ADAPTERS))
 def test_each_adapter_reaches_the_template(app_module, adapter):
     """End-to-end per adapter: FakeTokenizer raises on names the model lacks."""
-    chunks = run_respond(app_module, adapter=adapter, docs="Paris is in France.",
-                         requirements="Answer in one sentence.")
-    assert chunks
+    states = drive(app_module, adapter=adapter, docs="Paris is in France.",
+                   rules="Answer in one sentence.")
+    assert states
     assert app_module._fake_tokenizer.last_template_kwargs["adapter_name"] == adapter
     assert f"<|{adapter}|>" in app_module._fake_tokenizer.last_prompt
 
 
 @pytest.mark.parametrize("adapter", sorted(DOC_ADAPTERS_IN_CATALOG))
-def test_doc_adapters_pass_documents(app_module, adapter):
-    run_respond(app_module, adapter=adapter, docs="The sky is blue.")
+def test_doc_adapters_pass_documents_to_turn2(app_module, adapter):
+    drive(app_module, adapter=adapter, docs="The sky is blue.")
     docs = app_module._fake_tokenizer.last_template_kwargs.get("documents")
     assert docs and docs[0]["text"] == "The sky is blue."
 
 
-def test_docs_omitted_when_empty(app_module):
-    run_respond(app_module, adapter="answerability", docs="   ")
+def test_non_doc_adapters_omit_documents_in_turn2(app_module):
+    """Docs ground turn 1, but a non-doc adapter's turn must not receive them."""
+    gen = app_module.bot_respond(
+        [{"role": "user", "content": "Hi"}], "guardian-core",
+        "The sky is blue.", "", 64, 0.7
+    )
+    for state in gen:
+        if len(state) == 3:  # turn 1 finished — it should be grounded on the docs
+            docs = app_module._fake_tokenizer.last_template_kwargs.get("documents")
+            assert docs and docs[0]["text"] == "The sky is blue."
     assert "documents" not in app_module._fake_tokenizer.last_template_kwargs
 
 
-def test_requirement_check_injects_requirements(app_module):
-    """The Requirements box must actually reach the prompt (protocol:
-    the final user turn carries a <requirements> block — see
-    requirement_check.py for the reference CLI implementation)."""
-    run_respond(app_module, message="Check the last answer.",
-                adapter="requirement-check",
-                requirements="Must be under 50 words.")
-    prompt = app_module._fake_tokenizer.last_prompt
-    assert "<requirements>" in prompt
-    assert "Must be under 50 words." in prompt
+def test_hidden_textboxes_arrive_as_none(app_module):
+    """Gradio passes None (not \"\") for hidden textboxes — regression for the
+    AttributeError seen on the Space when docs/rules boxes were hidden."""
+    history = [{"role": "user", "content": "Hi"}]
+    states = list(
+        app_module.bot_respond(history, "uncertainty", None, None, 64, 0.7)
+    )
+    assert [m["role"] for m in states[-1]] == ["user", "assistant", "user", "assistant"]
 
 
-def test_requirements_ignored_for_other_adapters(app_module):
-    run_respond(app_module, adapter="uncertainty", requirements="Must rhyme.")
+def test_docs_omitted_when_empty(app_module):
+    drive(app_module, adapter="context-attribution", docs="   ")
+    assert "documents" not in app_module._fake_tokenizer.last_template_kwargs
+
+
+def test_requirement_check_followup_carries_requirements(app_module):
+    """Protocol: the final user turn carries a <requirements> block plus the
+    fixed evaluation instruction — see requirement_check.py, the reference
+    CLI implementation."""
+    drive(app_module, message="Write a haiku.", adapter="requirement-check",
+          rules="Must be under 50 words.")
+    followup = app_module._fake_tokenizer.last_messages[-1]["content"]
+    assert followup.startswith("<requirements> Must be under 50 words.")
+    assert app_module.EVALUATION_PROMPT in followup
+    assert "<requirements>" in app_module._fake_tokenizer.last_prompt
+
+
+def test_policy_guardrails_followup_carries_policy(app_module):
+    drive(app_module, adapter="policy-guardrails", rules="No medical advice.")
+    followup = app_module._fake_tokenizer.last_messages[-1]["content"]
+    assert "No medical advice." in followup
+
+
+def test_rules_ignored_for_other_adapters(app_module):
+    drive(app_module, adapter="uncertainty", rules="Must rhyme.")
     assert "Must rhyme." not in app_module._fake_tokenizer.last_prompt
 
 
+def test_adapter_turn_is_greedy(app_module):
+    """The adapter is a judge, not a generator — turn 2 must be greedy even
+    when the user's temperature slider is nonzero."""
+    drive(app_module, temperature=0.9)
+    gk = app_module._fake_model.last_generate_kwargs
+    assert gk["do_sample"] is False
+
+
 def test_generation_params_forwarded(app_module):
-    run_respond(app_module, max_new_tokens=128, temperature=0.0)
+    drive(app_module, max_new_tokens=128)
     gk = app_module._fake_model.last_generate_kwargs
     assert gk["max_new_tokens"] == 128
-    assert gk["do_sample"] is False  # temperature 0 → greedy

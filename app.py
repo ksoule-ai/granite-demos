@@ -4,7 +4,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 from threading import Thread
 
-MODEL_ID = "ibm-granite/granite-switch-4.1-30b-preview"
+MODEL_ID = "ibm-granite/granite-switch-4.1-8b-preview"
 
 # Must import before AutoModelForCausalLM to register GraniteSwitchForCausalLM
 import granite_switch.hf  # noqa: F401, E402
@@ -21,28 +21,13 @@ model.eval()
 # hyphen/underscore usage is upstream's, not a typo. Authoritative list:
 # https://github.com/generative-computing/granite-switch/blob/main/docs/adapter_catalog.html
 # (mirrored in tests/adapter_catalog.json, enforced by tests/test_app.py).
-
-# Adapters that take a documents/context input
-DOC_ADAPTERS = {
-    "answerability",
-    "hallucination_detection",
-    "citations",
-    "context-attribution",
-    "factuality-detection",
-    "factuality-correction",
-}
-
-# Adapters that need a requirements field
-REQUIREMENTS_ADAPTERS = {"requirement-check"}
+#
+# This demo offers only the Core and Guardian (safety) libraries. Each
+# interaction is two turns: a standard generation first, then the selected
+# adapter is automatically invoked on that generation via an adapter-specific
+# follow-up prompt that appears in the chat history.
 
 ADAPTER_CHOICES = [
-    "None (standard chat)",
-    # RAG library
-    "query_rewrite",
-    "query_clarification",
-    "answerability",
-    "hallucination_detection",
-    "citations",
     # Core library
     "requirement-check",
     "uncertainty",
@@ -54,45 +39,68 @@ ADAPTER_CHOICES = [
     "policy-guardrails",
 ]
 
+# Adapters whose second turn is grounded on a documents/context input
+DOC_ADAPTERS = {
+    "context-attribution",
+    "factuality-detection",
+    "factuality-correction",
+}
+
+# Adapters that need a free-text rule set (requirements or a policy)
+RULES_ADAPTERS = {"requirement-check", "policy-guardrails"}
+
 ADAPTER_DESCRIPTIONS = {
-    "None (standard chat)": "Standard Granite 4.1 30B instruct chat — no adapter active.",
-    "query_rewrite": "Rewrites the latest user query into a standalone form for better retrieval.",
-    "query_clarification": "Asks a clarifying question when the user query is ambiguous.",
-    "answerability": "Judges whether the question is answerable from the provided documents.",
-    "hallucination_detection": "Detects whether the assistant response hallucinates beyond the provided documents.",
-    "citations": "Generates inline citations for a response grounded in documents.",
-    "requirement-check": "Checks whether a response satisfies stated requirements. Returns {\"score\": \"yes\"|\"no\"}.",
-    "uncertainty": "Scores how certain the model is about its answer.",
-    "context-attribution": "Identifies which parts of the context support the answer.",
-    "guardian-core": "Core safety guardian — screens inputs or outputs for harm.",
-    "factuality-detection": "Flags factual errors in the assistant response against context documents.",
-    "factuality-correction": "Rewrites the response to fix factual errors against context documents.",
-    "policy-guardrails": "Checks a scenario against a natural-language policy.",
+    "requirement-check": "After the response is generated, checks whether it satisfies your stated requirements. Returns {\"score\": \"yes\"|\"no\"}.",
+    "uncertainty": "After the response is generated, scores how certain the model is about it.",
+    "context-attribution": "After the response is generated, identifies which parts of the provided context support it.",
+    "guardian-core": "After the response is generated, screens it for harm, unsafe content, or bias.",
+    "factuality-detection": "After the response is generated, flags factual errors in it against the context documents.",
+    "factuality-correction": "After the response is generated, rewrites it to fix factual errors against the context documents.",
+    "policy-guardrails": "After the response is generated, checks it against your natural-language policy.",
+}
+
+# Fixed instruction the requirement-check adapter was trained to read after
+# the constraints (verbatim from the granite-switch protocol; see
+# requirement_check.py, the reference CLI implementation).
+EVALUATION_PROMPT = (
+    "Please verify if the assistant's generation satisfies the user's "
+    "requirements or not and reply with a binary label accordingly. "
+    'Respond with a json {"score": "yes"} if the constraints are '
+    'satisfied or respond with {"score": "no"} if the constraints are not '
+    "satisfied."
+)
+
+FOLLOWUP_PROMPTS = {
+    "uncertainty": "How certain are you that your previous response is correct?",
+    "context-attribution": "Which parts of the provided documents support your previous response?",
+    "guardian-core": "Is the previous assistant response harmful, unsafe, or biased?",
+    "factuality-detection": "Identify any factual errors in the previous assistant response against the provided documents.",
+    "factuality-correction": "Rewrite the previous assistant response to correct any factual errors, based on the provided documents.",
 }
 
 
+def adapter_followup(adapter_name, rules):
+    """The user turn that automatically invokes the adapter on the last response."""
+    if adapter_name == "requirement-check":
+        return f"<requirements> {rules.strip()}\n{EVALUATION_PROMPT}"
+    if adapter_name == "policy-guardrails":
+        return (
+            f"Policy: {rules.strip()}\n"
+            "Does the previous assistant response comply with this policy?"
+        )
+    return FOLLOWUP_PROMPTS[adapter_name]
+
+
 @spaces.GPU(duration=120)
-def respond(message, history, adapter_choice, context_docs, requirements, max_new_tokens, temperature):
-    adapter_name = None if adapter_choice == "None (standard chat)" else adapter_choice
-
-    # requirement-check protocol: the final user turn carries the constraints
-    # in a <requirements> block (same as requirement_check.py, the CLI demo).
-    if adapter_name in REQUIREMENTS_ADAPTERS and requirements.strip():
-        message = f"<requirements> {requirements.strip()}\n{message}"
-
-    # history is Gradio 6 messages format: [{"role": ..., "content": ...}]
-    messages = [
-        {"role": m["role"], "content": m["content"]} for m in history if m["content"]
-    ]
-    messages.append({"role": "user", "content": message})
-
+def generate(messages, adapter_name, context_docs, max_new_tokens, temperature):
+    """Stream one completion for `messages`, optionally through an adapter."""
     template_kwargs = dict(
         add_generation_prompt=True,
         tokenize=False,
     )
     if adapter_name:
         template_kwargs["adapter_name"] = adapter_name
-    if adapter_name in DOC_ADAPTERS and context_docs.strip():
+    if context_docs.strip():
         template_kwargs["documents"] = [{"doc_id": "1", "text": context_docs.strip()}]
 
     prompt = tokenizer.apply_chat_template(messages, **template_kwargs)
@@ -117,30 +125,79 @@ def respond(message, history, adapter_choice, context_docs, requirements, max_ne
         yield partial
 
 
+def _as_messages(history):
+    # history is Gradio 6 messages format: [{"role": ..., "content": ...}]
+    return [
+        {"role": m["role"], "content": m["content"]} for m in history if m["content"]
+    ]
+
+
+def user_submit(message, history):
+    return "", history + [{"role": "user", "content": message}]
+
+
+def bot_respond(history, adapter_choice, context_docs, rules, max_new_tokens, temperature):
+    """Two-turn flow: standard generation, then automatic adapter invocation.
+
+    Turn 1 is a plain (no adapter) generation of the user's prompt, grounded
+    on the context documents when provided. Turn 2 appends the adapter's
+    follow-up prompt to the chat as a user message — visible in the UI
+    without user action — and streams the adapter's response. The adapter
+    turn is greedy (temperature 0): it is a judge, not a generator.
+    """
+    # Hidden Gradio textboxes arrive as None, not ""
+    context_docs = context_docs or ""
+    rules = rules or ""
+
+    # Turn 1: standard generation of the user's prompt
+    history = history + [{"role": "assistant", "content": ""}]
+    for partial in generate(
+        _as_messages(history[:-1]), None, context_docs, max_new_tokens, temperature
+    ):
+        history[-1]["content"] = partial
+        yield history
+
+    # Turn 2: the adapter-specific prompt appears in the chat automatically
+    followup = adapter_followup(adapter_choice, rules)
+    history = history + [{"role": "user", "content": followup}]
+    yield history
+
+    adapter_docs = context_docs if adapter_choice in DOC_ADAPTERS else ""
+    history = history + [{"role": "assistant", "content": ""}]
+    for partial in generate(
+        _as_messages(history[:-1]), adapter_choice, adapter_docs, max_new_tokens, 0.0
+    ):
+        history[-1]["content"] = partial
+        yield history
+
+
 def get_adapter_description(adapter_choice):
     return ADAPTER_DESCRIPTIONS.get(adapter_choice, "")
 
 
 def update_visibility(adapter_choice):
     show_docs = adapter_choice in DOC_ADAPTERS
-    show_reqs = adapter_choice in REQUIREMENTS_ADAPTERS
+    show_rules = adapter_choice in RULES_ADAPTERS
     return (
         gr.update(visible=show_docs),
-        gr.update(visible=show_reqs),
+        gr.update(visible=show_rules),
     )
 
 
-with gr.Blocks(title="Granite Switch 4.1 30B Demo") as demo:
+with gr.Blocks(title="Granite Switch 4.1 8B Demo") as demo:
     gr.Markdown(
         """
-# 🪨 Granite Switch 4.1 30B — ZeroGPU Demo
+# 🪨 Granite Switch 4.1 8B — ZeroGPU Demo
 
-[`ibm-granite/granite-switch-4.1-30b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-30b-preview)
-is a single 30B checkpoint with **12 embedded LoRA adapters** across three Granite Libraries:
-**RAG** (query rewriting, answerability, hallucination detection, citation),
-**Core** (requirement checking, certainty, contextual attribution), and
-**Guardian** (safety, bias, factuality). Select an adapter below to switch capabilities
-without loading a different model.
+[`ibm-granite/granite-switch-4.1-8b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-8b-preview)
+is a single 8B checkpoint with **embedded LoRA adapters**. This demo shows the
+**Core** (requirement checking, certainty, contextual attribution) and
+**Guardian** (safety, factuality, policy) libraries in a two-turn flow:
+
+1. Pick an adapter and submit a prompt.
+2. The model first answers normally (no adapter).
+3. The adapter's follow-up prompt then appears in the chat automatically,
+   and the adapter's verdict on that answer streams back.
         """
     )
 
@@ -160,25 +217,25 @@ without loading a different model.
             gr.Markdown("### Switch Configuration")
             adapter_dropdown = gr.Dropdown(
                 choices=ADAPTER_CHOICES,
-                value="None (standard chat)",
+                value="requirement-check",
                 label="Adapter",
-                info="Select which capability to activate.",
+                info="Runs automatically on the model's first answer.",
             )
             adapter_desc = gr.Markdown(
-                value=ADAPTER_DESCRIPTIONS["None (standard chat)"],
+                value=ADAPTER_DESCRIPTIONS["requirement-check"],
                 label="",
             )
             context_box = gr.Textbox(
                 label="Context / Documents",
-                placeholder="Paste document text here (required for RAG adapters)…",
+                placeholder="Paste document text here (grounds the answer and the adapter check)…",
                 lines=5,
                 visible=False,
             )
-            requirements_box = gr.Textbox(
-                label="Requirements",
-                placeholder="List the requirements the response must satisfy…",
+            rules_box = gr.Textbox(
+                label="Requirements / Policy",
+                placeholder="Requirements the response must satisfy, or the policy to check against…",
                 lines=4,
-                visible=False,
+                visible=True,
             )
             gr.Markdown("### Generation")
             max_tokens = gr.Slider(
@@ -196,19 +253,8 @@ without loading a different model.
     adapter_dropdown.change(
         fn=update_visibility,
         inputs=adapter_dropdown,
-        outputs=[context_box, requirements_box],
+        outputs=[context_box, rules_box],
     )
-
-    def user_submit(message, history):
-        return "", history + [{"role": "user", "content": message}]
-
-    def bot_respond(history, adapter_choice, context_docs, requirements, max_new_tokens, temperature):
-        message = history[-1]["content"]
-        prior_history = history[:-1]
-        history = history + [{"role": "assistant", "content": ""}]
-        for partial in respond(message, prior_history, adapter_choice, context_docs, requirements, max_new_tokens, temperature):
-            history[-1]["content"] = partial
-            yield history
 
     for trigger in (submit_btn.click, user_input.submit):
         trigger(
@@ -218,7 +264,7 @@ without loading a different model.
             queue=False,
         ).then(
             fn=bot_respond,
-            inputs=[chatbot, adapter_dropdown, context_box, requirements_box, max_tokens, temperature],
+            inputs=[chatbot, adapter_dropdown, context_box, rules_box, max_tokens, temperature],
             outputs=chatbot,
         )
 
