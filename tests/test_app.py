@@ -29,14 +29,9 @@ import pytest
 
 CATALOG = json.loads((Path(__file__).parent / "adapter_catalog.json").read_text())
 CATALOG_ADAPTERS = set(CATALOG["adapters"])
-CORE_GUARDIAN_ADAPTERS = {
-    name for name, meta in CATALOG["adapters"].items()
-    if meta["library"] in ("core", "guardian")
-}
-DOC_ADAPTERS_IN_CATALOG = {
-    name for name in CORE_GUARDIAN_ADAPTERS
-    if CATALOG["adapters"][name].get("needs_documents")
-}
+
+# The demo's curated roster
+EXPECTED_ADAPTERS = {"requirement-check", "uncertainty", "guardian-core"}
 
 
 # ---------------------------------------------------------------- adapter names
@@ -47,13 +42,17 @@ def test_every_ui_adapter_exists_upstream(app_module):
     assert not unknown, f"UI offers adapters the model does not have: {unknown}"
 
 
-def test_ui_offers_exactly_core_and_guardian(app_module):
-    """The journey is scoped to the Core and Guardian libraries — no RAG, no gaps."""
-    assert set(app_module.ADAPTER_CHOICES) == CORE_GUARDIAN_ADAPTERS
+def test_ui_offers_expected_adapters(app_module):
+    assert set(app_module.ADAPTER_CHOICES) == EXPECTED_ADAPTERS
 
 
-def test_doc_adapters_match_catalog(app_module):
-    assert app_module.DOC_ADAPTERS == DOC_ADAPTERS_IN_CATALOG
+def test_no_doc_adapters_in_roster(app_module):
+    """None of the current roster grounds its adapter turn on documents (the
+    catalog agrees none of them needs documents)."""
+    assert app_module.DOC_ADAPTERS == set()
+    assert not any(
+        CATALOG["adapters"][a].get("needs_documents") for a in EXPECTED_ADAPTERS
+    )
 
 
 def test_every_adapter_has_description(app_module):
@@ -71,14 +70,11 @@ def test_every_adapter_has_a_followup(app_module):
 # chat_template.jinja: the template splices the activation token in where
 # this text appears in the final user turn. Without the marker the adapter
 # activates only at the generation boundary and answers in prose instead of
-# its trained JSON protocol. (context-attribution is LoRA-flavored: no marker.)
+# its trained JSON protocol.
 INVOCATION_TEXT = {
     "requirement-check": "<requirements>",
     "uncertainty": "<certainty>",
     "guardian-core": "<guardian>",
-    "factuality-detection": "<guardian>",
-    "factuality-correction": "<guardian>",
-    "policy-guardrails": "<guardian>",
 }
 
 
@@ -98,17 +94,15 @@ def test_ui_builds(app_module):
 
 
 def test_visibility_toggles(app_module):
-    for adapter in CORE_GUARDIAN_ADAPTERS:
+    for adapter in EXPECTED_ADAPTERS:
         docs_upd, rules_upd = app_module.update_visibility([adapter])
-        assert docs_upd["visible"] == (adapter in DOC_ADAPTERS_IN_CATALOG), adapter
-        assert rules_upd["visible"] == (
-            adapter in {"requirement-check", "policy-guardrails"}
-        ), adapter
+        assert not docs_upd["visible"], adapter  # no doc adapters in the roster
+        assert rules_upd["visible"] == (adapter == "requirement-check"), adapter
     # any selected adapter needing a field is enough to show it
     docs_upd, rules_upd = app_module.update_visibility(
-        ["uncertainty", "factuality-detection", "requirement-check"]
+        ["uncertainty", "requirement-check"]
     )
-    assert docs_upd["visible"] and rules_upd["visible"]
+    assert rules_upd["visible"]
     docs_upd, rules_upd = app_module.update_visibility([])
     assert not docs_upd["visible"] and not rules_upd["visible"]
 
@@ -203,7 +197,7 @@ def test_streaming_is_cumulative_within_each_turn(app_module):
             assert cur.startswith(prev), "stream must be cumulative"
 
 
-@pytest.mark.parametrize("adapter", sorted(CORE_GUARDIAN_ADAPTERS))
+@pytest.mark.parametrize("adapter", sorted(EXPECTED_ADAPTERS))
 def test_each_adapter_reaches_the_template(app_module, adapter):
     """End-to-end per adapter: FakeTokenizer raises on names the model lacks."""
     states = drive(app_module, adapter=adapter, docs="Paris is in France.",
@@ -211,13 +205,6 @@ def test_each_adapter_reaches_the_template(app_module, adapter):
     assert states
     assert app_module._fake_tokenizer.last_template_kwargs["adapter_name"] == adapter
     assert f"<|{adapter}|>" in app_module._fake_tokenizer.last_prompt
-
-
-@pytest.mark.parametrize("adapter", sorted(DOC_ADAPTERS_IN_CATALOG))
-def test_doc_adapters_pass_documents_to_turn2(app_module, adapter):
-    drive(app_module, adapter=adapter, docs="The sky is blue.")
-    docs = app_module._fake_tokenizer.last_template_kwargs.get("documents")
-    assert docs and docs[0]["text"] == "The sky is blue."
 
 
 def test_non_doc_adapters_omit_documents_in_turn2(app_module):
@@ -245,7 +232,7 @@ def test_hidden_textboxes_arrive_as_none(app_module):
 
 
 def test_docs_omitted_when_empty(app_module):
-    drive(app_module, adapter="context-attribution", docs="   ")
+    drive(app_module, adapter="uncertainty", docs="   ")
     assert "documents" not in app_module._fake_tokenizer.last_template_kwargs
 
 
@@ -261,15 +248,29 @@ def test_requirement_check_followup_carries_requirements(app_module):
     assert "<requirements>" in app_module._fake_tokenizer.last_prompt
 
 
-def test_policy_guardrails_followup_carries_policy(app_module):
-    drive(app_module, adapter="policy-guardrails", rules="No medical advice.")
-    followup = app_module._fake_tokenizer.last_messages[-1]["content"]
-    assert "No medical advice." in followup
+def test_rules_append_to_the_user_prompt(app_module):
+    """Provided requirements are appended to the original prompt with the
+    "<prompt>\\n\\nRequirements: <requirements>" template, for the model and
+    the chat display alike."""
+    final = drive(app_module, message="Write a haiku.",
+                  adapter="requirement-check", rules="Must be under 50 words.")[-1]
+    expected = "Write a haiku.\n\nRequirements: Must be under 50 words."
+    assert app_module._fake_tokenizer.last_messages[0]["content"] == expected
+    assert app_module._clean_content(final[0]["content"]) == expected
 
 
-def test_rules_ignored_for_other_adapters(app_module):
+def test_no_rules_leaves_the_prompt_untouched(app_module):
+    final = drive(app_module, message="Write a haiku.", adapter="uncertainty",
+                  rules="")[-1]
+    assert app_module._fake_tokenizer.last_messages[0]["content"] == "Write a haiku."
+    assert "Requirements:" not in app_module._clean_content(final[0]["content"])
+
+
+def test_rules_do_not_leak_into_other_adapters_followups(app_module):
     drive(app_module, adapter="uncertainty", rules="Must rhyme.")
-    assert "Must rhyme." not in app_module._fake_tokenizer.last_prompt
+    followup = app_module._fake_tokenizer.last_messages[-1]["content"]
+    assert followup == app_module.adapter_followup("uncertainty", "")
+    assert "Must rhyme." not in followup
 
 
 def test_multiple_adapters_run_sequentially(app_module):

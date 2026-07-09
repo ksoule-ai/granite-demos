@@ -34,32 +34,21 @@ ADAPTER_CHOICES = [
     # Core library
     "requirement-check",
     "uncertainty",
-    "context-attribution",
     # Guardian library
     "guardian-core",
-    "factuality-detection",
-    "factuality-correction",
-    "policy-guardrails",
 ]
 
 # Adapters whose second turn is grounded on a documents/context input
-DOC_ADAPTERS = {
-    "context-attribution",
-    "factuality-detection",
-    "factuality-correction",
-}
+# (none in the current roster; docs still ground turn 1 when provided)
+DOC_ADAPTERS = set()
 
-# Adapters that need a free-text rule set (requirements or a policy)
-RULES_ADAPTERS = {"requirement-check", "policy-guardrails"}
+# Adapters that need a free-text rule set
+RULES_ADAPTERS = {"requirement-check"}
 
 ADAPTER_DESCRIPTIONS = {
     "requirement-check": "After the response is generated, checks whether it satisfies your stated requirements. Returns {\"score\": \"yes\"|\"no\"}.",
     "uncertainty": "After the response is generated, scores how certain the model is about it.",
-    "context-attribution": "After the response is generated, identifies which parts of the provided context support it.",
     "guardian-core": "After the response is generated, screens it for harm, unsafe content, or bias.",
-    "factuality-detection": "After the response is generated, flags factual errors in it against the context documents.",
-    "factuality-correction": "After the response is generated, rewrites it to fix factual errors against the context documents.",
-    "policy-guardrails": "After the response is generated, checks it against your natural-language policy.",
 }
 
 # Fixed instruction the requirement-check adapter was trained to read after
@@ -84,24 +73,10 @@ FOLLOWUP_PROMPTS = {
         'correct? Respond with a json {"score": "N"} where N is a certainty '
         "score from 0 to 9."
     ),
-    "context-attribution": (  # LoRA flavor: activated by its control token, no marker
-        "Which parts of the provided documents support your previous response?"
-    ),
     "guardian-core": (
         "<guardian> Is the previous assistant response harmful, unsafe, or "
         'biased? Respond with a json {"score": "yes"} if risk is detected or '
         '{"score": "no"} otherwise.'
-    ),
-    "factuality-detection": (
-        "<guardian> Assess the factual correctness of the previous assistant "
-        "response against the provided documents. Respond with a json "
-        '{"score": "yes"} if the response is factually incorrect or '
-        '{"score": "no"} if it is correct.'
-    ),
-    "factuality-correction": (
-        "<guardian> Correct any factual errors in the previous assistant "
-        "response using the provided documents. Respond with the corrected "
-        'response as json, or "none" if no correction is needed.'
     ),
 }
 
@@ -110,12 +85,6 @@ def adapter_followup(adapter_name, rules):
     """The user turn that automatically invokes the adapter on the last response."""
     if adapter_name == "requirement-check":
         return f"<requirements> {rules.strip()}\n{EVALUATION_PROMPT}"
-    if adapter_name == "policy-guardrails":
-        return (
-            f"<guardian> Policy: {rules.strip()}\n"
-            "Does the previous assistant response comply with this policy? "
-            'Respond with "Yes", "No", or "Ambiguous".'
-        )
     return FOLLOWUP_PROMPTS[adapter_name]
 
 
@@ -346,6 +315,17 @@ def bot_respond(history, adapter_choices, context_docs, rules, max_new_tokens, t
         adapter_choices = [adapter_choices]
     adapters = list(adapter_choices or [])
 
+    # User-provided requirements are appended to the original prompt, so
+    # turn 1 actually tries to satisfy them (and the chat shows what the
+    # model saw). requirement-check still receives its own <requirements>
+    # protocol turn.
+    if rules.strip():
+        prompt_text = _clean_content(history[-1]["content"])
+        history = history[:-1] + [{
+            "role": "user",
+            "content": f"{prompt_text}\n\nRequirements: {rules.strip()}",
+        }]
+
     followups = [adapter_followup(a, rules) for a in adapters]
     adapter_docs = [context_docs if a in DOC_ADAPTERS else "" for a in adapters]
 
@@ -420,8 +400,8 @@ with gr.Blocks(title="Granite Switch 4.1 8B Demo") as demo:
 
 [`ibm-granite/granite-switch-4.1-8b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-8b-preview)
 is a single 8B checkpoint with **embedded LoRA adapters**. This demo shows the
-**Core** (requirement checking, certainty, contextual attribution) and
-**Guardian** (safety, factuality, policy) libraries in a two-turn flow:
+**Core** (requirement checking, certainty) and
+**Guardian** (safety) libraries in a two-turn flow:
 
 1. Pick one or more adapters and submit a prompt.
 2. The model first answers normally (no adapter).
@@ -470,8 +450,8 @@ always a cold start because ZeroGPU releases the GPU between interactions.
                 visible=False,
             )
             rules_box = gr.Textbox(
-                label="Requirements / Policy",
-                placeholder="Requirements the response must satisfy, or the policy to check against…",
+                label="Requirements",
+                placeholder="Requirements the response must satisfy…",
                 lines=4,
                 visible=True,
             )
