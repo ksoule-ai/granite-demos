@@ -1,3 +1,20 @@
+---
+title: Granite Switch 4.1 30B Demo
+emoji: 🪨
+colorFrom: blue
+colorTo: gray
+sdk: gradio
+sdk_version: 5.0.0
+app_file: app.py
+pinned: false
+license: apache-2.0
+tags:
+  - granite
+  - ibm
+  - granite-switch
+  - zerogpu
+---
+
 # granite-switch endpoint and requirement-check test
 
 Host [`ibm-granite/granite-switch-4.1-3b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview) on a Hugging Face Inference Endpoint (vLLM backend) and call its **requirement-check** adapter from Python.
