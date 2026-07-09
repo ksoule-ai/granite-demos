@@ -1,7 +1,7 @@
 import spaces
 import gradio as gr
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, TextIteratorStreamer
 from threading import Thread
 
 MODEL_ID = "ibm-granite/granite-switch-4.1-8b-preview"
@@ -91,45 +91,165 @@ def adapter_followup(adapter_name, rules):
     return FOLLOWUP_PROMPTS[adapter_name]
 
 
-@spaces.GPU(duration=120)
-def generate(messages, adapter_name, context_docs, max_new_tokens, temperature):
-    """Stream one completion for `messages`, optionally through an adapter."""
+# --------------------------------------------------------------- KV caching
+# Both turns of an interaction run in one GPU call sharing a DynamicCache.
+# The adapter turn reuses the KV of its common token prefix with turn 1
+# (prompt + first generation) instead of re-prefilling it — sound for
+# Granite Switch's aLoRA adapters, whose weights only apply after the
+# activation token. The reuse ratio is published under each user message.
+# Turn 1 is always a cold start: ZeroGPU releases the GPU (and the cache)
+# between interactions.
+
+CACHE_NOTE_PREFIX = "\n\n⚡ `KV cache: "
+
+
+def cache_note(hits, total):
+    pct = 100 * hits / total if total else 0.0
+    return f"{CACHE_NOTE_PREFIX}{hits}/{total} prompt tokens reused ({pct:.0f}% hit)`"
+
+
+def _content_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):  # Gradio 6 block format
+        return "".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
+        )
+    return str(content)
+
+
+def strip_cache_note(content):
+    return _content_text(content).split(CACHE_NOTE_PREFIX)[0]
+
+
+def _common_prefix_len(a, b):
+    n = min(a.shape[-1], b.shape[-1])
+    if n == 0:
+        return 0
+    neq = (a[:n] != b[:n]).nonzero()
+    return int(neq[0]) if len(neq) else n
+
+
+def _crop_cache(cache, n):
+    cache.crop(n)
+
+
+def _render_text(messages, adapter_name, context_docs, add_generation_prompt=True):
     template_kwargs = dict(
-        add_generation_prompt=True,
+        add_generation_prompt=add_generation_prompt,
         tokenize=False,
     )
     if adapter_name:
         template_kwargs["adapter_name"] = adapter_name
     if context_docs.strip():
         template_kwargs["documents"] = [{"doc_id": "1", "text": context_docs.strip()}]
+    return tokenizer.apply_chat_template(messages, **template_kwargs)
 
-    prompt = tokenizer.apply_chat_template(messages, **template_kwargs)
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
 
+def _render(messages, adapter_name, context_docs):
+    prompt = _render_text(messages, adapter_name, context_docs)
+    return tokenizer(prompt, return_tensors="pt").input_ids
+
+
+def _extend_sequence(seq1, turn1_text, gen1_text, full2_text):
+    """Turn-2 input ids that reuse turn 1's exact tokens.
+
+    Re-tokenizing the full turn-2 render does not reproduce the token ids
+    the model actually generated (BPE decode->encode is not the identity),
+    which zeroes out KV reuse of the decode tokens. Instead, extend the
+    real turn-1 sequence tensor with only the tokenized suffix (follow-up
+    turn + adapter generation prompt). Returns None when the turn-2 render
+    is not a textual extension of what the model saw (e.g. different
+    documents), in which case the caller re-tokenizes from scratch.
+    """
+    prefix_text = turn1_text + gen1_text + tokenizer.eos_token
+    if not full2_text.startswith(prefix_text):
+        return None
+    base = seq1
+    if int(base[-1]) != tokenizer.eos_token_id:  # hit max_new_tokens, no EOS
+        base = torch.cat([base, base.new_tensor([tokenizer.eos_token_id])])
+    suffix = tokenizer(
+        full2_text[len(prefix_text):], return_tensors="pt", add_special_tokens=False
+    ).input_ids[0].to(base.device)
+    return torch.cat([base, suffix]).unsqueeze(0)
+
+
+def _stream_one(input_ids, cache, max_new_tokens, temperature, holder):
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-
     gen_kwargs = dict(
         input_ids=input_ids,
+        past_key_values=cache,
         streamer=streamer,
         max_new_tokens=max_new_tokens,
         do_sample=temperature > 0,
         temperature=temperature if temperature > 0 else 1.0,
     )
 
-    thread = Thread(target=model.generate, kwargs=gen_kwargs)
+    def run():
+        holder["sequence"] = model.generate(**gen_kwargs)[0]
+
+    thread = Thread(target=run)
     thread.start()
 
     partial = ""
     for token in streamer:
         partial += token
         yield partial
+    thread.join()
+    holder["text"] = partial
+
+
+@spaces.GPU(duration=120)
+def two_turn_generate(messages, adapter_name, followup, turn1_docs, turn2_docs,
+                      max_new_tokens, temperature):
+    """One interaction on one GPU slot: standard turn, then the adapter turn.
+
+    Yields ("stats", turn, hits, prompt_tokens) before each generation and
+    ("partial", turn, text) while it streams.
+    """
+    cache = DynamicCache()
+
+    turn1_text = _render_text(messages, None, turn1_docs)
+    ids1 = tokenizer(turn1_text, return_tensors="pt").input_ids.to(model.device)
+    yield ("stats", 1, 0, int(ids1.shape[1]))  # cold start, nothing cached
+    holder = {}
+    for partial in _stream_one(ids1, cache, max_new_tokens, temperature, holder):
+        yield ("partial", 1, partial)
+    seq1 = holder["sequence"]
+
+    messages2 = messages + [
+        {"role": "assistant", "content": holder["text"]},
+        {"role": "user", "content": followup},
+    ]
+    full2_text = _render_text(messages2, adapter_name, turn2_docs)
+    ids2 = None
+    if turn1_docs.strip() == turn2_docs.strip():
+        ids2 = _extend_sequence(seq1, turn1_text, holder["text"], full2_text)
+        if ids2 is not None:
+            ids2 = ids2.to(model.device)
+    if ids2 is None:  # docs differ or render isn't an extension — start over
+        ids2 = tokenizer(full2_text, return_tensors="pt").input_ids.to(model.device)
+    total2 = int(ids2.shape[1])
+    hits = max(0, min(
+        _common_prefix_len(seq1.to(ids2.device), ids2[0]),
+        cache.get_seq_length(),
+        total2 - 1,  # generate() must have at least one new token to process
+    ))
+    _crop_cache(cache, hits)
+    yield ("stats", 2, hits, total2)
+    for partial in _stream_one(ids2, cache, max_new_tokens, 0.0, {}):
+        yield ("partial", 2, partial)
 
 
 def _as_messages(history):
-    # history is Gradio 6 messages format: [{"role": ..., "content": ...}]
-    return [
-        {"role": m["role"], "content": m["content"]} for m in history if m["content"]
-    ]
+    # history is Gradio 6 messages format: [{"role": ..., "content": ...}];
+    # cache notes are UI decoration and must never reach the prompt
+    out = []
+    for m in history:
+        content = strip_cache_note(m["content"])
+        if content:
+            out.append({"role": m["role"], "content": content})
+    return out
 
 
 def user_submit(message, history):
@@ -144,31 +264,39 @@ def bot_respond(history, adapter_choice, context_docs, rules, max_new_tokens, te
     follow-up prompt to the chat as a user message — visible in the UI
     without user action — and streams the adapter's response. The adapter
     turn is greedy (temperature 0): it is a judge, not a generator.
+
+    Each generation's KV-cache reuse (hit rate) is appended as a note under
+    the user message that triggered it.
     """
     # Hidden Gradio textboxes arrive as None, not ""
     context_docs = context_docs or ""
     rules = rules or ""
 
-    # Turn 1: standard generation of the user's prompt
-    history = history + [{"role": "assistant", "content": ""}]
-    for partial in generate(
-        _as_messages(history[:-1]), None, context_docs, max_new_tokens, temperature
-    ):
-        history[-1]["content"] = partial
-        yield history
-
-    # Turn 2: the adapter-specific prompt appears in the chat automatically
     followup = adapter_followup(adapter_choice, rules)
-    history = history + [{"role": "user", "content": followup}]
-    yield history
-
     adapter_docs = context_docs if adapter_choice in DOC_ADAPTERS else ""
-    history = history + [{"role": "assistant", "content": ""}]
-    for partial in generate(
-        _as_messages(history[:-1]), adapter_choice, adapter_docs, max_new_tokens, 0.0
-    ):
-        history[-1]["content"] = partial
-        yield history
+
+    events = two_turn_generate(
+        _as_messages(history), adapter_choice, followup,
+        context_docs, adapter_docs, max_new_tokens, temperature,
+    )
+    for event in events:
+        if event[0] == "stats":
+            _, turn, hits, total = event
+            if turn == 1:
+                history[-1] = {
+                    "role": "user",
+                    "content": strip_cache_note(history[-1]["content"]) + cache_note(hits, total),
+                }
+            else:
+                # the adapter's prompt appears in the chat automatically
+                history = history + [{"role": "user", "content": followup + cache_note(hits, total)}]
+                yield history
+            history = history + [{"role": "assistant", "content": ""}]
+            yield history
+        else:
+            _, turn, partial = event
+            history[-1]["content"] = partial
+            yield history
 
 
 def get_adapter_description(adapter_choice):
@@ -198,6 +326,12 @@ is a single 8B checkpoint with **embedded LoRA adapters**. This demo shows the
 2. The model first answers normally (no adapter).
 3. The adapter's follow-up prompt then appears in the chat automatically,
    and the adapter's verdict on that answer streams back.
+
+Under each user message a ⚡ note reports the **KV-cache hit rate** for the
+generation it triggered. The adapter turn reuses the cached conversation
+prefix (Granite Switch's aLoRA adapters only apply after their activation
+token, so the base KV is valid); the first turn is always a cold start
+because ZeroGPU releases the GPU between interactions.
         """
     )
 

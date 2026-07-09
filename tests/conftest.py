@@ -34,6 +34,7 @@ VALID_ADAPTERS = set(CATALOG["adapters"])
 
 class FakeTokenizer:
     eos_token = "<|end_of_text|>"
+    eos_token_id = 10**9  # never produced by FakeModel's arange sequences
 
     def __init__(self):
         self.last_template_kwargs = None
@@ -64,7 +65,7 @@ class FakeTokenizer:
         self.last_prompt = prompt
         return prompt
 
-    def __call__(self, text, return_tensors=None):
+    def __call__(self, text, return_tensors=None, add_special_tokens=True):
         # Stable fake encoding: one id per whitespace-separated chunk.
         n = max(1, len(text.split()))
         return SimpleNamespace(input_ids=torch.arange(n).unsqueeze(0))
@@ -87,11 +88,21 @@ class FakeModel:
     def eval(self):
         return self
 
-    def generate(self, input_ids=None, streamer=None, max_new_tokens=None, **kwargs):
+    def generate(self, input_ids=None, streamer=None, max_new_tokens=None,
+                 past_key_values=None, **kwargs):
         self.last_generate_kwargs = dict(
-            input_ids=input_ids, max_new_tokens=max_new_tokens, **kwargs
+            input_ids=input_ids, max_new_tokens=max_new_tokens,
+            past_key_values=past_key_values, **kwargs
         )
         n_new = min(int(max_new_tokens or 8), 8)
+        if past_key_values is not None:
+            # Mimic generate(): KV exists for every processed position, i.e.
+            # everything except the last generated token (never fed forward).
+            processed = input_ids.shape[1] + n_new - 1
+            add = processed - past_key_values.get_seq_length()
+            if add > 0:
+                kv = torch.zeros(1, 1, add, 4)
+                past_key_values.update(kv, kv, 0)
         if streamer is not None:
             streamer.put(input_ids[0])  # prompt — skipped via skip_prompt=True
             base = input_ids.shape[1]

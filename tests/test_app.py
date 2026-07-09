@@ -105,7 +105,7 @@ def test_two_turn_shape(app_module):
 def test_followup_appears_in_history_automatically(app_module):
     states = drive(app_module, adapter="uncertainty")
     final = states[-1]
-    assert final[2]["content"] == app_module.adapter_followup("uncertainty", "")
+    assert final[2]["content"].startswith(app_module.adapter_followup("uncertainty", ""))
     # the follow-up must be yielded to the UI before the adapter response streams
     followup_first_seen = next(s for s in states if len(s) == 3)
     assert followup_first_seen[2]["role"] == "user"
@@ -116,7 +116,8 @@ def test_turn1_has_no_adapter_turn2_has_adapter(app_module):
         [{"role": "user", "content": "Hi"}], "guardian-core", "", "", 64, 0.7
     )
     for state in gen:
-        if len(state) == 3:  # follow-up just appended → turn 1 has finished
+        # while turn 1 is streaming, the template must not have seen an adapter
+        if len(state) == 2 and state[1]["content"]:
             assert "adapter_name" not in app_module._fake_tokenizer.last_template_kwargs
     assert app_module._fake_tokenizer.last_template_kwargs["adapter_name"] == "guardian-core"
     assert "<|guardian-core|>" in app_module._fake_tokenizer.last_prompt
@@ -166,7 +167,8 @@ def test_non_doc_adapters_omit_documents_in_turn2(app_module):
         "The sky is blue.", "", 64, 0.7
     )
     for state in gen:
-        if len(state) == 3:  # turn 1 finished — it should be grounded on the docs
+        # while turn 1 is streaming, its prompt should be grounded on the docs
+        if len(state) == 2 and state[1]["content"]:
             docs = app_module._fake_tokenizer.last_template_kwargs.get("documents")
             assert docs and docs[0]["text"] == "The sky is blue."
     assert "documents" not in app_module._fake_tokenizer.last_template_kwargs
@@ -208,6 +210,39 @@ def test_policy_guardrails_followup_carries_policy(app_module):
 def test_rules_ignored_for_other_adapters(app_module):
     drive(app_module, adapter="uncertainty", rules="Must rhyme.")
     assert "Must rhyme." not in app_module._fake_tokenizer.last_prompt
+
+
+# ---------------------------------------------------------------- KV-cache notes
+
+NOTE_RE = __import__("re").compile(r"⚡ `KV cache: (\d+)/(\d+) prompt tokens reused \((\d+)% hit\)`")
+
+
+def test_cache_note_under_both_user_messages(app_module):
+    final = drive(app_module, message="my task", adapter="uncertainty")[-1]
+    for i in (0, 2):
+        assert NOTE_RE.search(final[i]["content"]), f"no cache note on message {i}"
+
+
+def test_turn1_is_cold_turn2_reuses_prefix(app_module):
+    final = drive(app_module, message="my task", adapter="uncertainty")[-1]
+    h1, t1, _ = map(int, NOTE_RE.search(final[0]["content"]).groups())
+    h2, t2, _ = map(int, NOTE_RE.search(final[2]["content"]).groups())
+    assert h1 == 0 and t1 > 0, "turn 1 must report a cold cache"
+    assert 0 < h2 < t2, "adapter turn must reuse a proper prefix of its prompt"
+    # decode tokens from turn 1 must be reused, not just its prompt: the
+    # turn-2 input extends the actual turn-1 sequence tensor (re-tokenizing
+    # would break at the first generated token — BPE re-encode != identity)
+    assert h2 > t1, "adapter turn must also reuse turn 1's generated tokens"
+
+
+def test_cache_notes_never_reach_the_prompt(app_module):
+    # a second interaction whose incoming history carries notes from the first
+    final = drive(app_module, message="first question", adapter="uncertainty")[-1]
+    history = final + [{"role": "user", "content": "second question"}]
+    list(app_module.bot_respond(history, "uncertainty", "", "", 64, 0.7))
+    for m in app_module._fake_tokenizer.last_messages:
+        assert "KV cache:" not in m["content"]
+    assert app_module._fake_tokenizer.last_messages[0]["content"] == "first question"
 
 
 def test_adapter_turn_is_greedy(app_module):
