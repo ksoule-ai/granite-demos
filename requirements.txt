@@ -2,7 +2,7 @@ openai>=1.40.0
 python-dotenv>=1.0.0
 
 # Gradio Space / ZeroGPU
-gradio>=4.40.0
+gradio>=6.0,<7
 spaces
 transformers>=4.44.0
 accelerate>=0.30.0

@@ -17,8 +17,20 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 model.eval()
 
-# Adapters that need a context/documents field
-RAG_ADAPTERS = {"answerability", "hallucination-detection", "citation-generation"}
+# Adapter names must match the model's chat template exactly — the mixed
+# hyphen/underscore usage is upstream's, not a typo. Authoritative list:
+# https://github.com/generative-computing/granite-switch/blob/main/docs/adapter_catalog.html
+# (mirrored in tests/adapter_catalog.json, enforced by tests/test_app.py).
+
+# Adapters that take a documents/context input
+DOC_ADAPTERS = {
+    "answerability",
+    "hallucination_detection",
+    "citations",
+    "context-attribution",
+    "factuality-detection",
+    "factuality-correction",
+}
 
 # Adapters that need a requirements field
 REQUIREMENTS_ADAPTERS = {"requirement-check"}
@@ -26,34 +38,36 @@ REQUIREMENTS_ADAPTERS = {"requirement-check"}
 ADAPTER_CHOICES = [
     "None (standard chat)",
     # RAG library
-    "query-rewrite",
+    "query_rewrite",
+    "query_clarification",
     "answerability",
-    "hallucination-detection",
-    "citation-generation",
+    "hallucination_detection",
+    "citations",
     # Core library
     "requirement-check",
-    "certainty",
-    "contextual-attribution",
+    "uncertainty",
+    "context-attribution",
     # Guardian library
     "guardian-core",
-    "bias-detection",
     "factuality-detection",
-    "content-safety",
+    "factuality-correction",
+    "policy-guardrails",
 ]
 
 ADAPTER_DESCRIPTIONS = {
     "None (standard chat)": "Standard Granite 4.1 30B instruct chat — no adapter active.",
-    "query-rewrite": "Rewrites a user query to improve retrieval quality.",
+    "query_rewrite": "Rewrites the latest user query into a standalone form for better retrieval.",
+    "query_clarification": "Asks a clarifying question when the user query is ambiguous.",
     "answerability": "Judges whether the question is answerable from the provided documents.",
-    "hallucination-detection": "Detects whether the assistant response halluccinates beyond the provided documents.",
-    "citation-generation": "Generates inline citations for a response grounded in documents.",
-    "requirement-check": "Checks whether a response satisfies a set of stated requirements. Returns {\"score\": \"yes\"|\"no\"}.",
-    "certainty": "Scores how certain the model is about its answer.",
-    "contextual-attribution": "Identifies which parts of the context support the answer.",
-    "guardian-core": "Core safety and policy guardian — flags harmful content.",
-    "bias-detection": "Detects bias in the assistant response.",
-    "factuality-detection": "Flags factual errors in the assistant response.",
-    "content-safety": "Inline content safety check.",
+    "hallucination_detection": "Detects whether the assistant response hallucinates beyond the provided documents.",
+    "citations": "Generates inline citations for a response grounded in documents.",
+    "requirement-check": "Checks whether a response satisfies stated requirements. Returns {\"score\": \"yes\"|\"no\"}.",
+    "uncertainty": "Scores how certain the model is about its answer.",
+    "context-attribution": "Identifies which parts of the context support the answer.",
+    "guardian-core": "Core safety guardian — screens inputs or outputs for harm.",
+    "factuality-detection": "Flags factual errors in the assistant response against context documents.",
+    "factuality-correction": "Rewrites the response to fix factual errors against context documents.",
+    "policy-guardrails": "Checks a scenario against a natural-language policy.",
 }
 
 
@@ -61,11 +75,15 @@ ADAPTER_DESCRIPTIONS = {
 def respond(message, history, adapter_choice, context_docs, requirements, max_new_tokens, temperature):
     adapter_name = None if adapter_choice == "None (standard chat)" else adapter_choice
 
-    messages = []
-    for human, assistant in history:
-        messages.append({"role": "user", "content": human})
-        if assistant:
-            messages.append({"role": "assistant", "content": assistant})
+    # requirement-check protocol: the final user turn carries the constraints
+    # in a <requirements> block (same as requirement_check.py, the CLI demo).
+    if adapter_name in REQUIREMENTS_ADAPTERS and requirements.strip():
+        message = f"<requirements> {requirements.strip()}\n{message}"
+
+    # history is Gradio 6 messages format: [{"role": ..., "content": ...}]
+    messages = [
+        {"role": m["role"], "content": m["content"]} for m in history if m["content"]
+    ]
     messages.append({"role": "user", "content": message})
 
     template_kwargs = dict(
@@ -74,7 +92,7 @@ def respond(message, history, adapter_choice, context_docs, requirements, max_ne
     )
     if adapter_name:
         template_kwargs["adapter_name"] = adapter_name
-    if adapter_name in RAG_ADAPTERS and context_docs.strip():
+    if adapter_name in DOC_ADAPTERS and context_docs.strip():
         template_kwargs["documents"] = [{"doc_id": "1", "text": context_docs.strip()}]
 
     prompt = tokenizer.apply_chat_template(messages, **template_kwargs)
@@ -104,7 +122,7 @@ def get_adapter_description(adapter_choice):
 
 
 def update_visibility(adapter_choice):
-    show_docs = adapter_choice in RAG_ADAPTERS
+    show_docs = adapter_choice in DOC_ADAPTERS
     show_reqs = adapter_choice in REQUIREMENTS_ADAPTERS
     return (
         gr.update(visible=show_docs),
@@ -128,7 +146,7 @@ without loading a different model.
 
     with gr.Row():
         with gr.Column(scale=3):
-            chatbot = gr.Chatbot(label="Conversation", height=480, bubble_full_width=False)
+            chatbot = gr.Chatbot(label="Conversation", height=480)
             user_input = gr.Textbox(
                 placeholder="Type your message…",
                 label="Your message",
@@ -181,39 +199,28 @@ without loading a different model.
         outputs=[context_box, requirements_box],
     )
 
-    def user_submit(message, history, adapter_choice, context_docs, requirements, max_new_tokens, temperature):
-        history = history + [[message, None]]
-        return "", history
+    def user_submit(message, history):
+        return "", history + [{"role": "user", "content": message}]
 
     def bot_respond(history, adapter_choice, context_docs, requirements, max_new_tokens, temperature):
-        message = history[-1][0]
+        message = history[-1]["content"]
         prior_history = history[:-1]
-        history[-1][1] = ""
+        history = history + [{"role": "assistant", "content": ""}]
         for partial in respond(message, prior_history, adapter_choice, context_docs, requirements, max_new_tokens, temperature):
-            history[-1][1] = partial
+            history[-1]["content"] = partial
             yield history
 
-    submit_btn.click(
-        fn=user_submit,
-        inputs=[user_input, chatbot, adapter_dropdown, context_box, requirements_box, max_tokens, temperature],
-        outputs=[user_input, chatbot],
-        queue=False,
-    ).then(
-        fn=bot_respond,
-        inputs=[chatbot, adapter_dropdown, context_box, requirements_box, max_tokens, temperature],
-        outputs=chatbot,
-    )
-
-    user_input.submit(
-        fn=user_submit,
-        inputs=[user_input, chatbot, adapter_dropdown, context_box, requirements_box, max_tokens, temperature],
-        outputs=[user_input, chatbot],
-        queue=False,
-    ).then(
-        fn=bot_respond,
-        inputs=[chatbot, adapter_dropdown, context_box, requirements_box, max_tokens, temperature],
-        outputs=chatbot,
-    )
+    for trigger in (submit_btn.click, user_input.submit):
+        trigger(
+            fn=user_submit,
+            inputs=[user_input, chatbot],
+            outputs=[user_input, chatbot],
+            queue=False,
+        ).then(
+            fn=bot_respond,
+            inputs=[chatbot, adapter_dropdown, context_box, requirements_box, max_tokens, temperature],
+            outputs=chatbot,
+        )
 
     clear_btn.click(fn=lambda: ([], ""), outputs=[chatbot, user_input])
 

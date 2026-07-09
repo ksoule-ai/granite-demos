@@ -4,7 +4,7 @@ emoji: 🪨
 colorFrom: blue
 colorTo: gray
 sdk: gradio
-sdk_version: 5.0.0
+sdk_version: 6.20.0
 app_file: app.py
 pinned: false
 license: apache-2.0
@@ -156,6 +156,27 @@ Expected output:
 [good] requirements satisfied: True  (43 words)
 [ bad] requirements satisfied: False  (11 words)
 ```
+
+---
+
+## 3. Test the ZeroGPU Space app (no GPU needed)
+
+`tests/` verifies `app.py` before deploying it as a Space. Everything except
+the 60 GB checkpoint is real (gradio, transformers streaming, torch); the
+model is faked, and adapter names are validated against
+`tests/adapter_catalog.json` — a mirror of the
+[upstream adapter catalog](https://github.com/generative-computing/granite-switch/blob/main/docs/adapter_catalog.html).
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
+.venv/bin/python -m pytest tests/ -v
+```
+
+Covered: adapter names exist upstream, UI builds under the pinned gradio,
+documents/requirements fields toggle and reach the prompt, streaming works
+end-to-end through `TextIteratorStreamer`. Not covered: real weights and
+generation quality — after deploying, send one message per adapter as a
+manual smoke test.
 
 ---
 
