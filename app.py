@@ -226,46 +226,56 @@ def _stream_one(input_ids, cache, max_new_tokens, temperature, holder):
     holder["text"] = partial
 
 
-@spaces.GPU(duration=120)
-def two_turn_generate(messages, adapter_name, followup, turn1_docs, turn2_docs,
-                      max_new_tokens, temperature):
-    """One interaction on one GPU slot: standard turn, then the adapter turn.
+@spaces.GPU(duration=300)
+def multi_adapter_generate(messages, adapters, followups, turn1_docs, adapter_docs,
+                           max_new_tokens, temperature):
+    """One interaction on one GPU slot: a standard turn, then each selected
+    adapter's turn in sequence.
 
-    Yields ("stats", turn, hits, prompt_tokens) before each generation and
-    ("partial", turn, text) while it streams.
+    Every adapter judges the turn-1 response independently: each adapter
+    turn branches off the same turn-1 sequence, and the cache is cropped
+    back to the shared prefix between adapters (sound for aLoRA: the shared
+    prefix was computed with base weights).
+
+    Yields ("stats", idx, hits, prompt_tokens) before each generation and
+    ("partial", idx, text) while it streams; idx 0 is the standard turn,
+    idx i >= 1 is adapters[i-1].
     """
     cache = DynamicCache()
 
     turn1_text = _render_text(messages, None, turn1_docs)
     ids1 = tokenizer(turn1_text, return_tensors="pt").input_ids.to(model.device)
-    yield ("stats", 1, 0, int(ids1.shape[1]))  # cold start, nothing cached
+    yield ("stats", 0, 0, int(ids1.shape[1]))  # cold start, nothing cached
     holder = {}
     for partial in _stream_one(ids1, cache, max_new_tokens, temperature, holder):
-        yield ("partial", 1, partial)
+        yield ("partial", 0, partial)
     seq1 = holder["sequence"]
 
-    messages2 = messages + [
-        {"role": "assistant", "content": holder["text"]},
-        {"role": "user", "content": followup},
-    ]
-    full2_text = _render_text(messages2, adapter_name, turn2_docs)
-    ids2 = None
-    if turn1_docs.strip() == turn2_docs.strip():
-        ids2 = _extend_sequence(seq1, turn1_text, holder["text"], full2_text)
-        if ids2 is not None:
-            ids2 = ids2.to(model.device)
-    if ids2 is None:  # docs differ or render isn't an extension — start over
-        ids2 = tokenizer(full2_text, return_tensors="pt").input_ids.to(model.device)
-    total2 = int(ids2.shape[1])
-    hits = max(0, min(
-        _common_prefix_len(seq1.to(ids2.device), ids2[0]),
-        cache.get_seq_length(),
-        total2 - 1,  # generate() must have at least one new token to process
-    ))
-    _crop_cache(cache, hits)
-    yield ("stats", 2, hits, total2)
-    for partial in _stream_one(ids2, cache, max_new_tokens, 0.0, {}):
-        yield ("partial", 2, partial)
+    for i, (adapter, followup, docs2) in enumerate(
+        zip(adapters, followups, adapter_docs), start=1
+    ):
+        messages2 = messages + [
+            {"role": "assistant", "content": holder["text"]},
+            {"role": "user", "content": followup},
+        ]
+        full2_text = _render_text(messages2, adapter, docs2)
+        ids2 = None
+        if turn1_docs.strip() == docs2.strip():
+            ids2 = _extend_sequence(seq1, turn1_text, holder["text"], full2_text)
+            if ids2 is not None:
+                ids2 = ids2.to(model.device)
+        if ids2 is None:  # docs differ or render isn't an extension — start over
+            ids2 = tokenizer(full2_text, return_tensors="pt").input_ids.to(model.device)
+        total2 = int(ids2.shape[1])
+        hits = max(0, min(
+            _common_prefix_len(seq1.to(ids2.device), ids2[0]),
+            cache.get_seq_length(),
+            total2 - 1,  # generate() must have at least one new token to process
+        ))
+        _crop_cache(cache, hits)  # drops the previous adapter's branch
+        yield ("stats", i, hits, total2)
+        for partial in _stream_one(ids2, cache, max_new_tokens, 0.0, {}):
+            yield ("partial", i, partial)
 
 
 def _as_messages(history):
@@ -290,63 +300,73 @@ def user_submit(message, history):
     )
 
 
-def bot_respond(history, adapter_choice, context_docs, rules, max_new_tokens, temperature):
-    """Two-turn flow: standard generation, then automatic adapter invocation.
+def bot_respond(history, adapter_choices, context_docs, rules, max_new_tokens, temperature):
+    """Standard generation, then each selected adapter's turn in sequence.
 
     Turn 1 is a plain (no adapter) generation of the user's prompt, grounded
-    on the context documents when provided. Turn 2 appends the adapter's
-    follow-up prompt to the chat as a user message — visible in the UI
-    without user action — and streams the adapter's response. The adapter
-    turn is greedy (temperature 0): it is a judge, not a generator.
+    on the context documents when provided. Then, for every selected
+    adapter, its follow-up prompt appears in the chat as a user message —
+    visible in the UI without user action — and its response streams back.
+    Adapter turns are greedy (temperature 0): they are judges, not
+    generators.
 
     Each generation's KV-cache reuse (hit rate) is appended as a note under
-    the response it produced. The adapter's prompt is displayed in purple
-    italics (see followup_display / the Blocks css).
+    the response it produced. Adapter prompts and responses are shown in
+    purple (see followup_display / adapter_response_display / the css).
     """
     # Hidden Gradio textboxes arrive as None, not ""
     context_docs = context_docs or ""
     rules = rules or ""
+    if isinstance(adapter_choices, str):  # tolerate a bare adapter name
+        adapter_choices = [adapter_choices]
+    adapters = list(adapter_choices or [])
 
-    followup = adapter_followup(adapter_choice, rules)
-    adapter_docs = context_docs if adapter_choice in DOC_ADAPTERS else ""
+    followups = [adapter_followup(a, rules) for a in adapters]
+    adapter_docs = [context_docs if a in DOC_ADAPTERS else "" for a in adapters]
 
-    events = two_turn_generate(
-        _as_messages(history), adapter_choice, followup,
+    events = multi_adapter_generate(
+        _as_messages(history), adapters, followups,
         context_docs, adapter_docs, max_new_tokens, temperature,
     )
-    notes = {}
+    pending_note = None
     for event in events:
         if event[0] == "stats":
-            _, turn, hits, total = event
-            notes[turn] = cache_note(hits, total)
-            if turn == 2:
-                # turn 1 is complete — publish its note under its response,
-                # then the adapter's prompt appears in the chat automatically
-                history[-1]["content"] += notes[1]
-                history = history + [{"role": "user", "content": followup_display(followup)}]
+            _, idx, hits, total = event
+            if pending_note is not None:
+                # the previous generation is complete — publish its note
+                history[-1]["content"] += pending_note
+            pending_note = cache_note(hits, total)
+            if idx > 0:
+                # the adapter's prompt appears in the chat automatically
+                history = history + [
+                    {"role": "user", "content": followup_display(followups[idx - 1])}
+                ]
                 yield history
             history = history + [{"role": "assistant", "content": ""}]
             yield history
         else:
-            _, turn, partial = event
+            _, idx, partial = event
             history[-1]["content"] = (
-                adapter_response_display(partial) if turn == 2 else partial
+                adapter_response_display(partial) if idx > 0 else partial
             )
             yield history
-    history[-1]["content"] += notes[2]
-    yield history
+    if pending_note is not None:
+        history[-1]["content"] += pending_note
+        yield history
 
 
-def get_adapter_description(adapter_choice):
-    return ADAPTER_DESCRIPTIONS.get(adapter_choice, "")
+def get_adapter_description(adapter_choices):
+    return "\n\n".join(
+        f"**{a}**: {ADAPTER_DESCRIPTIONS[a]}"
+        for a in (adapter_choices or []) if a in ADAPTER_DESCRIPTIONS
+    )
 
 
-def update_visibility(adapter_choice):
-    show_docs = adapter_choice in DOC_ADAPTERS
-    show_rules = adapter_choice in RULES_ADAPTERS
+def update_visibility(adapter_choices):
+    selected = set(adapter_choices or [])
     return (
-        gr.update(visible=show_docs),
-        gr.update(visible=show_rules),
+        gr.update(visible=bool(selected & DOC_ADAPTERS)),
+        gr.update(visible=bool(selected & RULES_ADAPTERS)),
     )
 
 
@@ -378,11 +398,12 @@ is a single 8B checkpoint with **embedded LoRA adapters**. This demo shows the
 **Core** (requirement checking, certainty, contextual attribution) and
 **Guardian** (safety, factuality, policy) libraries in a two-turn flow:
 
-1. Pick an adapter and submit a prompt.
+1. Pick one or more adapters and submit a prompt.
 2. The model first answers normally (no adapter).
-3. The adapter's follow-up prompt (shown in *purple italics*) then appears
-   in the chat automatically, and the adapter's verdict on that answer
-   streams back. Use **Clear** to start over.
+3. Each selected adapter's follow-up prompt (shown in *purple italics*)
+   then appears in the chat automatically, and that adapter's verdict on
+   the answer streams back — one adapter after another, each judging the
+   original answer independently. Use **Clear** to start over.
 
 Under each response a ⚡ note reports the **KV-cache hit rate** for the
 generation that produced it. The adapter turn reuses the cached
@@ -408,12 +429,13 @@ always a cold start because ZeroGPU releases the GPU between interactions.
             gr.Markdown("### Switch Configuration")
             adapter_dropdown = gr.Dropdown(
                 choices=ADAPTER_CHOICES,
-                value="requirement-check",
-                label="Adapter",
-                info="Runs automatically on the model's first answer.",
+                value=["requirement-check"],
+                multiselect=True,
+                label="Adapters",
+                info="Each runs automatically on the model's first answer, in order.",
             )
             adapter_desc = gr.Markdown(
-                value=ADAPTER_DESCRIPTIONS["requirement-check"],
+                value=get_adapter_description(["requirement-check"]),
                 label="",
             )
             context_box = gr.Textbox(

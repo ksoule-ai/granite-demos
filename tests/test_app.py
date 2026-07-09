@@ -75,11 +75,18 @@ def test_ui_builds(app_module):
 
 def test_visibility_toggles(app_module):
     for adapter in CORE_GUARDIAN_ADAPTERS:
-        docs_upd, rules_upd = app_module.update_visibility(adapter)
+        docs_upd, rules_upd = app_module.update_visibility([adapter])
         assert docs_upd["visible"] == (adapter in DOC_ADAPTERS_IN_CATALOG), adapter
         assert rules_upd["visible"] == (
             adapter in {"requirement-check", "policy-guardrails"}
         ), adapter
+    # any selected adapter needing a field is enough to show it
+    docs_upd, rules_upd = app_module.update_visibility(
+        ["uncertainty", "factuality-detection", "requirement-check"]
+    )
+    assert docs_upd["visible"] and rules_upd["visible"]
+    docs_upd, rules_upd = app_module.update_visibility([])
+    assert not docs_upd["visible"] and not rules_upd["visible"]
 
 
 # ---------------------------------------------------------------- two-turn flow
@@ -87,9 +94,10 @@ def test_visibility_toggles(app_module):
 def drive(app_module, message="Hello", adapter="uncertainty", docs="", rules="",
           max_new_tokens=64, temperature=0.7):
     """Run one full interaction; return every yielded history state."""
+    adapters = [adapter] if isinstance(adapter, str) else adapter
     history = [{"role": "user", "content": message}]
     return list(
-        app_module.bot_respond(history, adapter, docs, rules,
+        app_module.bot_respond(history, adapters, docs, rules,
                                max_new_tokens, temperature)
     )
 
@@ -238,6 +246,39 @@ def test_policy_guardrails_followup_carries_policy(app_module):
 def test_rules_ignored_for_other_adapters(app_module):
     drive(app_module, adapter="uncertainty", rules="Must rhyme.")
     assert "Must rhyme." not in app_module._fake_tokenizer.last_prompt
+
+
+def test_multiple_adapters_run_sequentially(app_module):
+    adapters = ["uncertainty", "guardian-core", "requirement-check"]
+    final = drive(app_module, message="my task", adapter=adapters,
+                  rules="Must be polite.")[-1]
+    roles = [m["role"] for m in final]
+    assert roles == ["user", "assistant", "user", "assistant", "user", "assistant",
+                     "user", "assistant"]
+    # each adapter's own follow-up, in selection order, styled
+    for i, adapter in enumerate(adapters):
+        followup_msg = final[2 + 2 * i]["content"]
+        assert 'class="adapter-prompt"' in followup_msg
+        expected = app_module.adapter_followup(adapter, "Must be polite.")
+        assert app_module._clean_content(followup_msg) == expected
+    # every response (base + 3 adapters) carries a cache note; prompts don't
+    for i, m in enumerate(final):
+        has_note = bool(NOTE_RE.search(m["content"]))
+        assert has_note == (m["role"] == "assistant"), f"message {i}"
+    # the last adapter to run is the last one selected
+    assert app_module._fake_tokenizer.last_template_kwargs["adapter_name"] == (
+        "requirement-check"
+    )
+
+
+def test_each_adapter_turn_reuses_the_shared_prefix(app_module):
+    final = drive(app_module, message="my task",
+                  adapter=["uncertainty", "guardian-core"])[-1]
+    _, t1, _ = map(int, NOTE_RE.search(final[1]["content"]).groups())
+    for i in (3, 5):
+        h, t, _ = map(int, NOTE_RE.search(final[i]["content"]).groups())
+        assert h > t1, f"adapter response {i} must reuse turn 1's decode tokens"
+        assert h < t
 
 
 # ---------------------------------------------------------------- KV-cache notes
