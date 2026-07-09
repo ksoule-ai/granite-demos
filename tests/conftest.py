@@ -1,118 +1,110 @@
-"""Test doubles for running app.py without a GPU or the 60 GB checkpoint.
+"""Test doubles for running app.py without a GPU or the 16 GB checkpoint.
 
-Everything except the model weights is real: the actual `gradio`,
-`transformers` (including TextIteratorStreamer), `torch`, and
-`granite_switch` packages are imported. Only three things are faked,
-patched in *before* app.py's module-level load:
+Everything except the model weights is real: the actual `mellea`,
+`transformers`, `torch`, `granite_switch`, and `gradio` packages are
+imported, and the *real* Granite Switch tokenizer + chat template render
+every prompt (so adapter activation tokens are exercised for real, all the
+way through mellea's intrinsic pipeline). Only two things are faked, patched
+in *before* app.py's module-level load:
 
-* ``spaces``          — pass-through GPU decorator (no HF Spaces runtime here)
-* ``AutoTokenizer``   — FakeTokenizer that mimics the Granite Switch chat
-                        template contract: it validates ``adapter_name``
-                        against the authoritative catalog
-                        (tests/adapter_catalog.json) and inserts the
-                        ``<|name|>`` control token, exactly as the real
-                        template does. Unknown adapter names raise, as they
-                        would in production.
-* ``AutoModelForCausalLM`` — FakeModel whose ``generate()`` feeds token ids
-                        through the *real* TextIteratorStreamer protocol
-                        (prompt put, token puts, end), so app.py's streaming
-                        path is exercised for real.
+* ``spaces``               — pass-through GPU decorator (no HF Spaces runtime)
+* ``AutoModelForCausalLM`` — FakeSwitchModel whose ``generate()`` returns
+                             scripted text: judge answers when an adapter
+                             control token (ids 100352-100363) is present in
+                             the prompt, base answers otherwise. It records
+                             every call so tests can assert on the exact
+                             token ids and generate kwargs the model saw.
 """
 
-import json
 import sys
 import types
-from pathlib import Path
-from types import SimpleNamespace
+from collections import deque
 
 import pytest
 import torch
+from transformers.generation.utils import GenerateDecoderOnlyOutput
 
-CATALOG = json.loads((Path(__file__).parent / "adapter_catalog.json").read_text())
-VALID_ADAPTERS = set(CATALOG["adapters"])
+# Control token ids from the model's config.json / adapter_index.json.
+CONTROL_TOKENS = {
+    "citations": 100352,
+    "query_rewrite": 100353,
+    "query_clarification": 100354,
+    "hallucination_detection": 100355,
+    "answerability": 100356,
+    "factuality-detection": 100357,
+    "policy-guardrails": 100358,
+    "factuality-correction": 100359,
+    "guardian-core": 100360,
+    "uncertainty": 100361,
+    "requirement-check": 100362,
+    "context-attribution": 100363,
+}
+_ID_TO_ADAPTER = {v: k for k, v in CONTROL_TOKENS.items()}
 
-
-class FakeTokenizer:
-    eos_token = "<|end_of_text|>"
-    eos_token_id = 10**9  # never produced by FakeModel's arange sequences
-
-    def __init__(self):
-        self.last_template_kwargs = None
-        self.last_messages = None
-        self.last_prompt = None
-
-    def apply_chat_template(self, messages, **kwargs):
-        adapter = kwargs.get("adapter_name")
-        if adapter is not None and adapter not in VALID_ADAPTERS:
-            # The real chat template only knows the embedded adapters'
-            # control tokens; an unknown name fails there too.
-            raise ValueError(f"unknown adapter_name: {adapter!r}")
-        self.last_template_kwargs = dict(kwargs)
-        self.last_messages = [dict(m) for m in messages]
-
-        parts = []
-        for m in messages:
-            parts.append(f"<|start_of_role|>{m['role']}<|end_of_role|>{m['content']}<|end_of_text|>")
-        docs = kwargs.get("documents")
-        if docs:
-            rendered = " ".join(d["text"] for d in docs)
-            parts.insert(0, f"<|start_of_role|>documents<|end_of_role|>{rendered}<|end_of_text|>")
-        if kwargs.get("add_generation_prompt"):
-            parts.append("<|start_of_role|>assistant<|end_of_role|>")
-        if adapter:
-            parts.append(f"<|{adapter}|>")
-        prompt = "".join(parts)
-        self.last_prompt = prompt
-        return prompt
-
-    def __call__(self, text, return_tensors=None, add_special_tokens=True):
-        # Stable fake encoding: one id per whitespace-separated chunk.
-        n = max(1, len(text.split()))
-        return SimpleNamespace(input_ids=torch.arange(n).unsqueeze(0))
-
-    def decode(self, token_ids, skip_special_tokens=False, **kwargs):
-        if hasattr(token_ids, "tolist"):
-            token_ids = token_ids.tolist()
-        if isinstance(token_ids, int):
-            token_ids = [token_ids]
-        # Trailing space makes TextIteratorStreamer flush on every put.
-        return "".join(f"tok{i} " for i in token_ids)
+# Raw model outputs conforming to each adapter's io.yaml response_format.
+DEFAULT_JUDGE_ANSWERS = {
+    "requirement-check": '{"score": "yes"}',
+    "uncertainty": '{"score": "8"}',
+    "guardian-core": '{"score": "no"}',
+}
 
 
-class FakeModel:
+class FakeSwitchModel:
     device = torch.device("cpu")
+    vocab_size = 100364
 
-    def __init__(self):
-        self.last_generate_kwargs = None
+    def __init__(self, tokenizer):
+        self._tokenizer = tokenizer
+        self.calls = []  # (adapter_name | None, input id list, generate kwargs)
+        self.judge_answers = {}  # adapter name -> deque of scripted raw outputs
+        self.base_answer = "The moon is made of anorthosite rock."
 
+    # ------------------------------------------------------------- scripting
+    def script_judge(self, adapter, answers):
+        self.judge_answers[adapter] = deque(answers)
+
+    def reset(self):
+        self.calls = []
+        self.judge_answers = {}
+        self.base_answer = "The moon is made of anorthosite rock."
+
+    def calls_for(self, adapter):
+        return [c for c in self.calls if c[0] == adapter]
+
+    # ------------------------------------------------- transformers protocol
     def eval(self):
         return self
 
-    def generate(self, input_ids=None, streamer=None, max_new_tokens=None,
-                 past_key_values=None, **kwargs):
-        self.last_generate_kwargs = dict(
-            input_ids=input_ids, max_new_tokens=max_new_tokens,
-            past_key_values=past_key_values, **kwargs
-        )
-        n_new = min(int(max_new_tokens or 8), 8)
-        if past_key_values is not None:
-            # Mimic generate(): KV exists for every processed position, i.e.
-            # everything except the last generated token (never fed forward).
-            processed = input_ids.shape[1] + n_new - 1
-            add = processed - past_key_values.get_seq_length()
-            if add > 0:
-                kv = torch.zeros(1, 1, add, 4)
-                past_key_values.update(kv, kv, 0)
-        if streamer is not None:
-            streamer.put(input_ids[0])  # prompt — skipped via skip_prompt=True
-            base = input_ids.shape[1]
-            for i in range(n_new):
-                streamer.put(torch.tensor([base + i]))
-            streamer.end()
-        return torch.cat(
-            [input_ids, torch.arange(input_ids.shape[1], input_ids.shape[1] + n_new).unsqueeze(0)],
-            dim=1,
-        )
+    def active_adapters(self):
+        raise ValueError("No adapter loaded. Please load an adapter first.")
+
+    def set_adapter(self, *args, **kwargs):
+        raise ValueError("No adapter loaded. Please load an adapter first.")
+
+    def generate(self, inputs, **kwargs):
+        input_ids = inputs if torch.is_tensor(inputs) else inputs["input_ids"]
+        ids = input_ids[0].tolist()
+        adapter = next((_ID_TO_ADAPTER[t] for t in ids if t in _ID_TO_ADAPTER), None)
+        self.calls.append((adapter, ids, dict(kwargs)))
+
+        if adapter is not None:
+            script = self.judge_answers.get(adapter)
+            text = script.popleft() if script else DEFAULT_JUDGE_ANSWERS[adapter]
+        else:
+            text = self.base_answer
+        new = self._tokenizer(text, add_special_tokens=False, return_tensors="pt").input_ids
+        new = torch.cat([new, torch.tensor([[self._tokenizer.eos_token_id]])], dim=1)
+        sequences = torch.cat([input_ids, new], dim=1)
+
+        scores = None
+        if kwargs.get("output_scores"):
+            scores = tuple(
+                torch.full((1, self.vocab_size), -20.0).scatter(1, new[:, i:i + 1], 20.0)
+                for i in range(new.shape[1])
+            )
+        if kwargs.get("return_dict_in_generate"):
+            return GenerateDecoderOnlyOutput(sequences=sequences, scores=scores)
+        return sequences
 
 
 @pytest.fixture(scope="session")
@@ -129,17 +121,25 @@ def app_module():
     sys.modules["spaces"] = spaces_stub
 
     import transformers
+    from pathlib import Path
 
-    fake_tokenizer = FakeTokenizer()
-    fake_model = FakeModel()
+    fake_holder = {}
 
-    orig_tok = transformers.AutoTokenizer.from_pretrained
+    def fake_model_from_pretrained(cls, *args, **kwargs):
+        # The tokenizer is loaded (for real) before the model in app.py.
+        return fake_holder["model"]
+
     orig_model = transformers.AutoModelForCausalLM.from_pretrained
-    transformers.AutoTokenizer.from_pretrained = classmethod(
-        lambda cls, *a, **k: fake_tokenizer
-    )
+    orig_tok = transformers.AutoTokenizer.from_pretrained
+
+    def tok_from_pretrained(cls, *args, **kwargs):
+        tokenizer = orig_tok(*args, **kwargs)
+        fake_holder["model"] = FakeSwitchModel(tokenizer)
+        return tokenizer
+
+    transformers.AutoTokenizer.from_pretrained = classmethod(tok_from_pretrained)
     transformers.AutoModelForCausalLM.from_pretrained = classmethod(
-        lambda cls, *a, **k: fake_model
+        fake_model_from_pretrained
     )
     try:
         sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -148,6 +148,11 @@ def app_module():
         transformers.AutoTokenizer.from_pretrained = orig_tok
         transformers.AutoModelForCausalLM.from_pretrained = orig_model
 
-    app._fake_tokenizer = fake_tokenizer
-    app._fake_model = fake_model
+    app._fake_model = fake_holder["model"]
     return app
+
+
+@pytest.fixture()
+def fake_model(app_module):
+    app_module._fake_model.reset()
+    return app_module._fake_model

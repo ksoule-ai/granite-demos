@@ -14,7 +14,23 @@ tags:
   - ibm
   - granite-switch
   - zerogpu
+  - mellea
 ---
+
+# granite-switch demos
+
+**The Space app ([`app.py`](app.py))** drives
+[`ibm-granite/granite-switch-4.1-8b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-8b-preview)
+on ZeroGPU through [Mellea](https://docs.mellea.ai)'s HuggingFace backend:
+the **requirement-check** aLoRA powers an instruct–validate–repair loop, and
+**uncertainty** / **guardian-core** judge the final answer.
+[`switch_backend.py`](switch_backend.py) is the glue that teaches mellea's
+`LocalHFBackend` to activate the checkpoint's *embedded* adapters via chat
+template control tokens (mellea 0.6.0 only supports embedded adapters on its
+vLLM/OpenAI backend out of the box). Tests: `.venv/bin/python -m pytest tests/`.
+
+The rest of this README covers the separate **Inference Endpoint** deployment
+and the reference requirement-check CLI.
 
 # granite-switch endpoint and requirement-check test
 

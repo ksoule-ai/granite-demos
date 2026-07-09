@@ -1,16 +1,23 @@
 import html
-import re
 
 import spaces
 import gradio as gr
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, TextIteratorStreamer
-from threading import Thread
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_ID = "ibm-granite/granite-switch-4.1-8b-preview"
 
 # Must import before AutoModelForCausalLM to register GraniteSwitchForCausalLM
 import granite_switch.hf  # noqa: F401, E402
+
+from mellea import MelleaSession
+from mellea.stdlib.context import ChatContext
+from mellea.stdlib.components.intrinsic import core as core_intrinsics
+from mellea.stdlib.components.intrinsic import guardian as guardian_intrinsics
+from mellea.stdlib.requirements import ALoraRequirement
+from mellea.stdlib.sampling import RejectionSamplingStrategy
+
+from switch_backend import SwitchBackend
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 model = AutoModelForCausalLM.from_pretrained(
@@ -20,16 +27,18 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 model.eval()
 
-# Adapter names must match the model's chat template exactly — the mixed
+# Mellea drives all generation. SwitchBackend (switch_backend.py) teaches
+# mellea's HF backend to activate the checkpoint's *embedded* adapters via
+# the chat template's control tokens instead of PEFT loading.
+backend = SwitchBackend(MODEL_ID, custom_config=(tokenizer, model, model.device))
+backend.register_embedded_adapters()
+
+# Adapter names must match the model's adapter_index.json exactly — the mixed
 # hyphen/underscore usage is upstream's, not a typo. Authoritative list:
 # https://github.com/generative-computing/granite-switch/blob/main/docs/adapter_catalog.html
 # (mirrored in tests/adapter_catalog.json, enforced by tests/test_app.py).
 #
-# This demo offers only the Core and Guardian (safety) libraries. Each
-# interaction is two turns: a standard generation first, then the selected
-# adapter is automatically invoked on that generation via an adapter-specific
-# follow-up prompt that appears in the chat history.
-
+# This demo offers only the Core and Guardian (safety) libraries.
 ADAPTER_CHOICES = [
     # Core library
     "requirement-check",
@@ -38,252 +47,113 @@ ADAPTER_CHOICES = [
     "guardian-core",
 ]
 
-# Adapters whose second turn is grounded on a documents/context input
-# (none in the current roster; docs still ground turn 1 when provided)
-DOC_ADAPTERS = set()
-
-# Adapters that need a free-text rule set
-RULES_ADAPTERS = {"requirement-check"}
-
 ADAPTER_DESCRIPTIONS = {
-    "requirement-check": "After the response is generated, checks whether it satisfies your stated requirements. Returns {\"score\": \"yes\"|\"no\"}.",
-    "uncertainty": "After the response is generated, scores how certain the model is about it.",
-    "guardian-core": "After the response is generated, screens it for harm, unsafe content, or bias.",
+    "requirement-check": (
+        "Drives a Mellea **instruct–validate–repair** loop: each draft answer is "
+        "validated by the requirement-check aLoRA and regenerated until it passes "
+        "(or the attempt budget runs out)."
+    ),
+    "uncertainty": "After the final answer, scores how certain the model is about it (0–1).",
+    "guardian-core": "After the final answer, screens it for harm and reports a risk score (0–1).",
 }
 
-# Fixed instruction the requirement-check adapter was trained to read after
-# the constraints (verbatim from the granite-switch protocol; see
-# requirement_check.py, the reference CLI implementation).
-EVALUATION_PROMPT = (
-    "Please verify if the assistant's generation satisfies the user's "
-    "requirements or not and reply with a binary label accordingly. "
-    'Respond with a json {"score": "yes"} if the constraints are '
-    'satisfied or respond with {"score": "no"} if the constraints are not '
-    "satisfied."
-)
-
-# Each aLoRA adapter's invocation text must appear in the final user turn:
-# the chat template splices the activation token in at that marker
-# (adapter_map in the model's chat_template.jinja). Without it the adapter
-# only activates at the generation boundary and tends to answer in prose
-# instead of its trained JSON protocol.
-FOLLOWUP_PROMPTS = {
-    "uncertainty": (
-        "<certainty> How certain are you that your previous response is "
-        'correct? Respond with a json {"score": "N"} where N is a certainty '
-        "score from 0 to 9."
-    ),
-    "guardian-core": (
-        "<guardian> Is the previous assistant response harmful, unsafe, or "
-        'biased? Respond with a json {"score": "yes"} if risk is detected or '
-        '{"score": "no"} otherwise.'
-    ),
-}
+# Adapters that judge the final answer after it is produced (requirement-check
+# instead steers generation through the IVR loop).
+JUDGE_ADAPTERS = ["uncertainty", "guardian-core"]
 
 
-def adapter_followup(adapter_name, rules):
-    """The user turn that automatically invokes the adapter on the last response."""
-    if adapter_name == "requirement-check":
-        return f"<requirements> {rules.strip()}\n{EVALUATION_PROMPT}"
-    return FOLLOWUP_PROMPTS[adapter_name]
-
-
-# --------------------------------------------------------------- KV caching
-# Both turns of an interaction run in one GPU call sharing a DynamicCache.
-# The adapter turn reuses the KV of its common token prefix with turn 1
-# (prompt + first generation) instead of re-prefilling it — sound for
-# Granite Switch's aLoRA adapters, whose weights only apply after the
-# activation token. The reuse ratio is published under each user message.
-# Turn 1 is always a cold start: ZeroGPU releases the GPU (and the cache)
-# between interactions.
-
-CACHE_NOTE_PREFIX = "\n\n⚡ `KV cache: "
-
-
-def cache_note(hits, total):
-    pct = 100 * hits / total if total else 0.0
-    return f"{CACHE_NOTE_PREFIX}{hits}/{total} prompt tokens reused ({pct:.0f}% hit)`"
-
-
-def _content_text(content):
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):  # Gradio 6 block format
-        return "".join(
-            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
-        )
-    return str(content)
-
-
-def strip_cache_note(content):
-    return _content_text(content).split(CACHE_NOTE_PREFIX)[0]
-
-
-# The adapter's prompt and response bubbles are tinted purple: their content
-# is wrapped in marker spans the CSS targets via :has(). The wrappers are
-# UI-only and must never reach the model (see _clean_content).
-ADAPTER_SPAN_RE = re.compile(
-    r'^<span class="adapter-(?:prompt|response)">(.*)</span>$', re.S
-)
-
-
-def followup_display(followup):
-    return f'<span class="adapter-prompt">{html.escape(followup)}</span>'
-
-
-def adapter_response_display(text):
+# ------------------------------------------------------------------ rendering
+# Adapter/verdict bubbles are tinted purple: their content is wrapped in a
+# marker span the CSS targets via :has(). The wrappers are UI-only.
+def verdict_display(text):
     return f'<span class="adapter-response">{html.escape(text)}</span>'
 
 
-def _clean_content(content):
-    text = strip_cache_note(content)
-    m = ADAPTER_SPAN_RE.match(text)
-    if m:
-        text = html.unescape(m.group(1))
-    return text
+def status_display(text):
+    return f'<span class="adapter-prompt">{html.escape(text)}</span>'
 
 
-def _common_prefix_len(a, b):
-    n = min(a.shape[-1], b.shape[-1])
-    if n == 0:
-        return 0
-    neq = (a[:n] != b[:n]).nonzero()
-    return int(neq[0]) if len(neq) else n
+ATTEMPT_NOTE = {True: "✅ requirement satisfied", False: "❌ requirement not satisfied"}
 
 
-def _crop_cache(cache, n):
-    cache.crop(n)
-
-
-def _render_text(messages, adapter_name, context_docs, add_generation_prompt=True):
-    template_kwargs = dict(
-        add_generation_prompt=add_generation_prompt,
-        tokenize=False,
-    )
-    if adapter_name:
-        template_kwargs["adapter_name"] = adapter_name
-    if context_docs.strip():
-        template_kwargs["documents"] = [{"doc_id": "1", "text": context_docs.strip()}]
-    return tokenizer.apply_chat_template(messages, **template_kwargs)
-
-
-def _render(messages, adapter_name, context_docs):
-    prompt = _render_text(messages, adapter_name, context_docs)
-    return tokenizer(prompt, return_tensors="pt").input_ids
-
-
-def _extend_sequence(seq1, turn1_text, gen1_text, full2_text):
-    """Turn-2 input ids that reuse turn 1's exact tokens.
-
-    Re-tokenizing the full turn-2 render does not reproduce the token ids
-    the model actually generated (BPE decode->encode is not the identity),
-    which zeroes out KV reuse of the decode tokens. Instead, extend the
-    real turn-1 sequence tensor with only the tokenized suffix (follow-up
-    turn + adapter generation prompt). Returns None when the turn-2 render
-    is not a textual extension of what the model saw (e.g. different
-    documents), in which case the caller re-tokenizes from scratch.
-    """
-    prefix_text = turn1_text + gen1_text + tokenizer.eos_token
-    if not full2_text.startswith(prefix_text):
-        return None
-    base = seq1
-    if int(base[-1]) != tokenizer.eos_token_id:  # hit max_new_tokens, no EOS
-        base = torch.cat([base, base.new_tensor([tokenizer.eos_token_id])])
-    suffix = tokenizer(
-        full2_text[len(prefix_text):], return_tensors="pt", add_special_tokens=False
-    ).input_ids[0].to(base.device)
-    return torch.cat([base, suffix]).unsqueeze(0)
-
-
-def _stream_one(input_ids, cache, max_new_tokens, temperature, holder):
-    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-    gen_kwargs = dict(
-        input_ids=input_ids,
-        past_key_values=cache,
-        streamer=streamer,
-        max_new_tokens=max_new_tokens,
-        do_sample=temperature > 0,
-        temperature=temperature if temperature > 0 else 1.0,
-    )
-
-    def run():
-        holder["sequence"] = model.generate(**gen_kwargs)[0]
-
-    thread = Thread(target=run)
-    thread.start()
-
-    partial = ""
-    for token in streamer:
-        partial += token
-        yield partial
-    thread.join()
-    holder["text"] = partial
-
-
+# ---------------------------------------------------------------- generation
 @spaces.GPU(duration=300)
-def multi_adapter_generate(messages, adapters, followups, turn1_docs, adapter_docs,
-                           max_new_tokens, temperature):
-    """One interaction on one GPU slot: a standard turn, then each selected
-    adapter's turn in sequence.
+def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget):
+    """One interaction on one GPU slot, driven end-to-end by Mellea.
 
-    Every adapter judges the turn-1 response independently: each adapter
-    turn branches off the same turn-1 sequence, and the cache is cropped
-    back to the shared prefix between adapters (sound for aLoRA: the shared
-    prefix was computed with base weights).
+    If requirement-check is selected (and requirements were given), the answer
+    is produced by ``m.instruct`` under a RejectionSamplingStrategy: generate,
+    validate with the embedded requirement-check aLoRA, retry on failure.
+    Otherwise a single plain generation runs. Each remaining selected adapter
+    then judges the final answer via its Mellea intrinsic. Yields events:
 
-    Yields ("stats", idx, hits, prompt_tokens) before each generation and
-    ("partial", idx, text) while it streams; idx 0 is the standard turn,
-    idx i >= 1 is adapters[i-1].
+      ("status", text)                      — progress notes for the UI
+      ("attempt", i, text, passed|None)     — a generation attempt (passed is
+                                              None outside the IVR loop)
+      ("final", index, success, attempts)   — which attempt was selected
+      ("verdict", adapter, text)            — a judge adapter's verdict
     """
-    cache = DynamicCache()
+    gen_options = {"max_new_tokens": int(max_new_tokens)}
+    if temperature > 0:
+        gen_options["do_sample"] = True
+        gen_options["temperature"] = float(temperature)
+    else:
+        gen_options["do_sample"] = False
 
-    turn1_text = _render_text(messages, None, turn1_docs)
-    ids1 = tokenizer(turn1_text, return_tensors="pt").input_ids.to(model.device)
-    yield ("stats", 0, 0, int(ids1.shape[1]))  # cold start, nothing cached
-    holder = {}
-    for partial in _stream_one(ids1, cache, max_new_tokens, temperature, holder):
-        yield ("partial", 0, partial)
-    seq1 = holder["sequence"]
+    m = MelleaSession(backend, ctx=ChatContext())
+    use_ivr = "requirement-check" in adapters and rules.strip()
 
-    for i, (adapter, followup, docs2) in enumerate(
-        zip(adapters, followups, adapter_docs), start=1
-    ):
-        messages2 = messages + [
-            {"role": "assistant", "content": holder["text"]},
-            {"role": "user", "content": followup},
-        ]
-        full2_text = _render_text(messages2, adapter, docs2)
-        ids2 = None
-        if turn1_docs.strip() == docs2.strip():
-            ids2 = _extend_sequence(seq1, turn1_text, holder["text"], full2_text)
-            if ids2 is not None:
-                ids2 = ids2.to(model.device)
-        if ids2 is None:  # docs differ or render isn't an extension — start over
-            ids2 = tokenizer(full2_text, return_tensors="pt").input_ids.to(model.device)
-        total2 = int(ids2.shape[1])
-        hits = max(0, min(
-            _common_prefix_len(seq1.to(ids2.device), ids2[0]),
-            cache.get_seq_length(),
-            total2 - 1,  # generate() must have at least one new token to process
-        ))
-        _crop_cache(cache, hits)  # drops the previous adapter's branch
-        yield ("stats", i, hits, total2)
-        for partial in _stream_one(ids2, cache, max_new_tokens, 0.0, {}):
-            yield ("partial", i, partial)
+    if use_ivr:
+        yield (
+            "status",
+            f"Running instruct → validate → repair (budget: {int(loop_budget)} attempts, "
+            "validated by the requirement-check aLoRA)…",
+        )
+        result = m.instruct(
+            prompt,
+            requirements=[ALoraRequirement(rules.strip())],
+            strategy=RejectionSamplingStrategy(loop_budget=int(loop_budget)),
+            return_sampling_results=True,
+            model_options=gen_options,
+        )
+        for i, (gen, validations) in enumerate(
+            zip(result.sample_generations, result.sample_validations), start=1
+        ):
+            passed = all(bool(v) for _, v in validations)
+            yield ("attempt", i, str(gen), passed)
+        yield (
+            "final",
+            result.result_index,
+            result.success,
+            len(result.sample_generations),
+        )
+    else:
+        yield ("status", "Generating…")
+        output = m.instruct(prompt, strategy=None, model_options=gen_options)
+        yield ("attempt", 1, str(output), None)
+
+    for adapter in adapters:
+        if adapter == "uncertainty":
+            yield ("status", "uncertainty aLoRA is scoring the answer…")
+            certainty = core_intrinsics.check_certainty(m.ctx, backend)
+            verdict = "confident" if certainty >= 0.5 else "not confident"
+            yield (
+                "verdict",
+                "uncertainty",
+                f"uncertainty → certainty {certainty:.2f}: the model is {verdict} in this answer.",
+            )
+        elif adapter == "guardian-core":
+            yield ("status", "guardian-core aLoRA is screening the answer…")
+            risk = guardian_intrinsics.guardian_check(m.ctx, backend, criteria="harm")
+            verdict = "⚠️ risk detected" if risk > 0.5 else "no harm detected"
+            yield (
+                "verdict",
+                "guardian-core",
+                f"guardian-core → harm risk {risk:.2f}: {verdict}.",
+            )
 
 
-def _as_messages(history):
-    # history is Gradio 6 messages format: [{"role": ..., "content": ...}];
-    # cache notes and adapter-prompt styling are UI decoration and must
-    # never reach the prompt
-    out = []
-    for m in history:
-        content = _clean_content(m["content"])
-        if content:
-            out.append({"role": m["role"], "content": content})
-    return out
-
-
+# ------------------------------------------------------------------ UI logic
 def user_submit(message, history):
     # Single-shot demo: hide the input and Send button as soon as a message
     # is submitted; only Clear remains once the responses have generated.
@@ -294,70 +164,59 @@ def user_submit(message, history):
     )
 
 
-def bot_respond(history, adapter_choices, context_docs, rules, max_new_tokens, temperature):
-    """Standard generation, then each selected adapter's turn in sequence.
+def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, loop_budget):
+    """Render run_switch's event stream into the chat history.
 
-    Turn 1 is a plain (no adapter) generation of the user's prompt, grounded
-    on the context documents when provided. Then, for every selected
-    adapter, its follow-up prompt appears in the chat as a user message —
-    visible in the UI without user action — and its response streams back.
-    Adapter turns are greedy (temperature 0): they are judges, not
-    generators.
-
-    Each generation's KV-cache reuse (hit rate) is appended as a note under
-    the response it produced. Adapter prompts and responses are shown in
-    purple (see followup_display / adapter_response_display / the css).
+    Attempts appear as normal assistant bubbles (failed IVR attempts carry a
+    ❌ note, the selected one a ✅). Adapter verdicts and progress notes are
+    purple (see verdict_display / status_display / the css). A status bubble
+    is replaced by the next real event.
     """
     # Hidden Gradio textboxes arrive as None, not ""
-    context_docs = context_docs or ""
     rules = rules or ""
     if isinstance(adapter_choices, str):  # tolerate a bare adapter name
         adapter_choices = [adapter_choices]
     adapters = list(adapter_choices or [])
 
-    # User-provided requirements are appended to the original prompt, so
-    # turn 1 actually tries to satisfy them (and the chat shows what the
-    # model saw). requirement-check still receives its own <requirements>
-    # protocol turn.
-    if rules.strip():
-        prompt_text = _clean_content(history[-1]["content"])
-        history = history[:-1] + [{
-            "role": "user",
-            "content": f"{prompt_text}\n\nRequirements: {rules.strip()}",
-        }]
+    prompt = history[-1]["content"]
+    status_pending = False
 
-    followups = [adapter_followup(a, rules) for a in adapters]
-    adapter_docs = [context_docs if a in DOC_ADAPTERS else "" for a in adapters]
+    def drop_status(h):
+        return h[:-1] if status_pending else h
 
-    events = multi_adapter_generate(
-        _as_messages(history), adapters, followups,
-        context_docs, adapter_docs, max_new_tokens, temperature,
-    )
-    pending_note = None
-    for event in events:
-        if event[0] == "stats":
-            _, idx, hits, total = event
-            if pending_note is not None:
-                # the previous generation is complete — publish its note
-                history[-1]["content"] += pending_note
-            pending_note = cache_note(hits, total)
-            if idx > 0:
-                # the adapter's prompt appears in the chat automatically
-                history = history + [
-                    {"role": "user", "content": followup_display(followups[idx - 1])}
-                ]
-                yield history
-            history = history + [{"role": "assistant", "content": ""}]
-            yield history
-        else:
-            _, idx, partial = event
-            history[-1]["content"] = (
-                adapter_response_display(partial) if idx > 0 else partial
+    for event in run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget):
+        kind = event[0]
+        if kind == "status":
+            history = drop_status(history) + [
+                {"role": "assistant", "content": status_display(event[1])}
+            ]
+            status_pending = True
+        elif kind == "attempt":
+            _, i, text, passed = event
+            if passed is not None:
+                text = f"{text}\n\n*attempt {i}: {ATTEMPT_NOTE[passed]}*"
+            history = drop_status(history) + [{"role": "assistant", "content": text}]
+            status_pending = False
+        elif kind == "final":
+            _, index, success, attempts = event
+            note = (
+                f"✅ IVR loop converged on attempt {index + 1} of {attempts}."
+                if success
+                else f"⚠️ Attempt budget exhausted after {attempts} tries; showing attempt {index + 1}."
             )
-            yield history
-    if pending_note is not None:
-        history[-1]["content"] += pending_note
+            history = drop_status(history) + [
+                {"role": "assistant", "content": verdict_display(note)}
+            ]
+            status_pending = False
+        elif kind == "verdict":
+            text = event[2]
+            history = drop_status(history) + [
+                {"role": "assistant", "content": verdict_display(text)}
+            ]
+            status_pending = False
         yield history
+    if status_pending:
+        yield drop_status(history)
 
 
 def get_adapter_description(adapter_choices):
@@ -369,10 +228,8 @@ def get_adapter_description(adapter_choices):
 
 def update_visibility(adapter_choices):
     selected = set(adapter_choices or [])
-    return (
-        gr.update(visible=bool(selected & DOC_ADAPTERS)),
-        gr.update(visible=bool(selected & RULES_ADAPTERS)),
-    )
+    show_rules = "requirement-check" in selected
+    return gr.update(visible=show_rules), gr.update(visible=show_rules)
 
 
 CSS = """
@@ -396,25 +253,23 @@ CSS = """
 with gr.Blocks(title="Granite Switch 4.1 8B Demo") as demo:
     gr.Markdown(
         """
-# 🪨 Granite Switch 4.1 8B — ZeroGPU Demo
+# 🪨 Granite Switch 4.1 8B — Mellea IVR Demo (ZeroGPU)
 
 [`ibm-granite/granite-switch-4.1-8b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-8b-preview)
-is a single 8B checkpoint with **embedded LoRA adapters**. This demo shows the
-**Core** (requirement checking, certainty) and
-**Guardian** (safety) libraries in a two-turn flow:
+is a single 8B checkpoint with **embedded LoRA adapters**. This demo drives it
+with [Mellea](https://docs.mellea.ai)'s HuggingFace backend:
 
-1. Pick one or more adapters and submit a prompt.
-2. The model first answers normally (no adapter).
-3. Each selected adapter's follow-up prompt (shown in *purple italics*)
-   then appears in the chat automatically, and that adapter's verdict on
-   the answer streams back — one adapter after another, each judging the
-   original answer independently. Use **Clear** to start over.
+1. Pick adapters, optionally state **requirements**, and submit a prompt.
+2. With **requirement-check** selected, Mellea runs an
+   **instruct → validate → repair** loop: every draft is judged by the
+   embedded requirement-check aLoRA and regenerated until it passes or the
+   attempt budget runs out. Each attempt appears in the chat with its verdict.
+3. **uncertainty** and **guardian-core** then judge the final answer; their
+   verdicts appear in *purple*. Use **Clear** to start over.
 
-Under each response a ⚡ note reports the **KV-cache hit rate** for the
-generation that produced it. The adapter turn reuses the cached
-conversation prefix (Granite Switch's aLoRA adapters only apply after
-their activation token, so the base KV is valid); the first turn is
-always a cold start because ZeroGPU releases the GPU between interactions.
+The adapters are activated by control tokens spliced in by the model's chat
+template — no separate adapter weights are loaded. Judged turns are always
+greedy; only the drafts use your temperature.
         """
     )
 
@@ -437,22 +292,22 @@ always a cold start because ZeroGPU releases the GPU between interactions.
                 value=["requirement-check"],
                 multiselect=True,
                 label="Adapters",
-                info="Each runs automatically on the model's first answer, in order.",
+                info="requirement-check steers generation (IVR); the others judge the result.",
             )
             adapter_desc = gr.Markdown(
                 value=get_adapter_description(["requirement-check"]),
                 label="",
             )
-            context_box = gr.Textbox(
-                label="Context / Documents",
-                placeholder="Paste document text here (grounds the answer and the adapter check)…",
-                lines=5,
-                visible=False,
-            )
             rules_box = gr.Textbox(
                 label="Requirements",
                 placeholder="Requirements the response must satisfy…",
                 lines=4,
+                visible=True,
+            )
+            loop_budget = gr.Slider(
+                minimum=1, maximum=5, value=3, step=1,
+                label="IVR attempt budget",
+                info="Max generate→validate cycles for requirement-check.",
                 visible=True,
             )
             gr.Markdown("### Generation")
@@ -471,7 +326,7 @@ always a cold start because ZeroGPU releases the GPU between interactions.
     adapter_dropdown.change(
         fn=update_visibility,
         inputs=adapter_dropdown,
-        outputs=[context_box, rules_box],
+        outputs=[rules_box, loop_budget],
     )
 
     for trigger in (submit_btn.click, user_input.submit):
@@ -482,7 +337,7 @@ always a cold start because ZeroGPU releases the GPU between interactions.
             queue=False,
         ).then(
             fn=bot_respond,
-            inputs=[chatbot, adapter_dropdown, context_box, rules_box, max_tokens, temperature],
+            inputs=[chatbot, adapter_dropdown, rules_box, max_tokens, temperature, loop_budget],
             outputs=chatbot,
         )
 
