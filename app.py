@@ -1,3 +1,6 @@
+import html
+import re
+
 import spaces
 import gradio as gr
 import torch
@@ -122,6 +125,30 @@ def strip_cache_note(content):
     return _content_text(content).split(CACHE_NOTE_PREFIX)[0]
 
 
+# The adapter's prompt and response bubbles are tinted purple: their content
+# is wrapped in marker spans the CSS targets via :has(). The wrappers are
+# UI-only and must never reach the model (see _clean_content).
+ADAPTER_SPAN_RE = re.compile(
+    r'^<span class="adapter-(?:prompt|response)">(.*)</span>$', re.S
+)
+
+
+def followup_display(followup):
+    return f'<span class="adapter-prompt">{html.escape(followup)}</span>'
+
+
+def adapter_response_display(text):
+    return f'<span class="adapter-response">{html.escape(text)}</span>'
+
+
+def _clean_content(content):
+    text = strip_cache_note(content)
+    m = ADAPTER_SPAN_RE.match(text)
+    if m:
+        text = html.unescape(m.group(1))
+    return text
+
+
 def _common_prefix_len(a, b):
     n = min(a.shape[-1], b.shape[-1])
     if n == 0:
@@ -243,17 +270,24 @@ def two_turn_generate(messages, adapter_name, followup, turn1_docs, turn2_docs,
 
 def _as_messages(history):
     # history is Gradio 6 messages format: [{"role": ..., "content": ...}];
-    # cache notes are UI decoration and must never reach the prompt
+    # cache notes and adapter-prompt styling are UI decoration and must
+    # never reach the prompt
     out = []
     for m in history:
-        content = strip_cache_note(m["content"])
+        content = _clean_content(m["content"])
         if content:
             out.append({"role": m["role"], "content": content})
     return out
 
 
 def user_submit(message, history):
-    return "", history + [{"role": "user", "content": message}]
+    # Single-shot demo: hide the input and Send button as soon as a message
+    # is submitted; only Clear remains once the responses have generated.
+    return (
+        gr.update(value="", visible=False),
+        history + [{"role": "user", "content": message}],
+        gr.update(visible=False),
+    )
 
 
 def bot_respond(history, adapter_choice, context_docs, rules, max_new_tokens, temperature):
@@ -266,7 +300,8 @@ def bot_respond(history, adapter_choice, context_docs, rules, max_new_tokens, te
     turn is greedy (temperature 0): it is a judge, not a generator.
 
     Each generation's KV-cache reuse (hit rate) is appended as a note under
-    the user message that triggered it.
+    the response it produced. The adapter's prompt is displayed in purple
+    italics (see followup_display / the Blocks css).
     """
     # Hidden Gradio textboxes arrive as None, not ""
     context_docs = context_docs or ""
@@ -279,24 +314,27 @@ def bot_respond(history, adapter_choice, context_docs, rules, max_new_tokens, te
         _as_messages(history), adapter_choice, followup,
         context_docs, adapter_docs, max_new_tokens, temperature,
     )
+    notes = {}
     for event in events:
         if event[0] == "stats":
             _, turn, hits, total = event
-            if turn == 1:
-                history[-1] = {
-                    "role": "user",
-                    "content": strip_cache_note(history[-1]["content"]) + cache_note(hits, total),
-                }
-            else:
-                # the adapter's prompt appears in the chat automatically
-                history = history + [{"role": "user", "content": followup + cache_note(hits, total)}]
+            notes[turn] = cache_note(hits, total)
+            if turn == 2:
+                # turn 1 is complete — publish its note under its response,
+                # then the adapter's prompt appears in the chat automatically
+                history[-1]["content"] += notes[1]
+                history = history + [{"role": "user", "content": followup_display(followup)}]
                 yield history
             history = history + [{"role": "assistant", "content": ""}]
             yield history
         else:
             _, turn, partial = event
-            history[-1]["content"] = partial
+            history[-1]["content"] = (
+                adapter_response_display(partial) if turn == 2 else partial
+            )
             yield history
+    history[-1]["content"] += notes[2]
+    yield history
 
 
 def get_adapter_description(adapter_choice):
@@ -312,6 +350,24 @@ def update_visibility(adapter_choice):
     )
 
 
+CSS = """
+/* the whole bubble turns purple; inner elements stay transparent so the
+   text never shows its own background patch */
+.message:has(.adapter-prompt),
+.message:has(.adapter-response) {
+    background-color: #c4b5fd !important;
+    border-color: #a78bfa !important;
+    color: #1f2937 !important;
+}
+.adapter-prompt, .adapter-response,
+.message:has(.adapter-prompt) *,
+.message:has(.adapter-response) * {
+    background: transparent !important;
+    color: inherit !important;
+}
+.adapter-prompt { font-style: italic; }
+"""
+
 with gr.Blocks(title="Granite Switch 4.1 8B Demo") as demo:
     gr.Markdown(
         """
@@ -324,14 +380,15 @@ is a single 8B checkpoint with **embedded LoRA adapters**. This demo shows the
 
 1. Pick an adapter and submit a prompt.
 2. The model first answers normally (no adapter).
-3. The adapter's follow-up prompt then appears in the chat automatically,
-   and the adapter's verdict on that answer streams back.
+3. The adapter's follow-up prompt (shown in *purple italics*) then appears
+   in the chat automatically, and the adapter's verdict on that answer
+   streams back. Use **Clear** to start over.
 
-Under each user message a ⚡ note reports the **KV-cache hit rate** for the
-generation it triggered. The adapter turn reuses the cached conversation
-prefix (Granite Switch's aLoRA adapters only apply after their activation
-token, so the base KV is valid); the first turn is always a cold start
-because ZeroGPU releases the GPU between interactions.
+Under each response a ⚡ note reports the **KV-cache hit rate** for the
+generation that produced it. The adapter turn reuses the cached
+conversation prefix (Granite Switch's aLoRA adapters only apply after
+their activation token, so the base KV is valid); the first turn is
+always a cold start because ZeroGPU releases the GPU between interactions.
         """
     )
 
@@ -394,7 +451,7 @@ because ZeroGPU releases the GPU between interactions.
         trigger(
             fn=user_submit,
             inputs=[user_input, chatbot],
-            outputs=[user_input, chatbot],
+            outputs=[user_input, chatbot, submit_btn],
             queue=False,
         ).then(
             fn=bot_respond,
@@ -402,8 +459,11 @@ because ZeroGPU releases the GPU between interactions.
             outputs=chatbot,
         )
 
-    clear_btn.click(fn=lambda: ([], ""), outputs=[chatbot, user_input])
+    clear_btn.click(
+        fn=lambda: ([], gr.update(value="", visible=True), gr.update(visible=True)),
+        outputs=[chatbot, user_input, submit_btn],
+    )
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(css=CSS)

@@ -105,10 +105,37 @@ def test_two_turn_shape(app_module):
 def test_followup_appears_in_history_automatically(app_module):
     states = drive(app_module, adapter="uncertainty")
     final = states[-1]
-    assert final[2]["content"].startswith(app_module.adapter_followup("uncertainty", ""))
+    followup = app_module.adapter_followup("uncertainty", "")
+    # displayed in purple italics via the adapter-prompt wrapper
+    assert final[2]["content"] == app_module.followup_display(followup)
+    assert 'class="adapter-prompt"' in final[2]["content"]
     # the follow-up must be yielded to the UI before the adapter response streams
     followup_first_seen = next(s for s in states if len(s) == 3)
     assert followup_first_seen[2]["role"] == "user"
+
+
+def test_adapter_response_is_styled_and_round_trips(app_module):
+    final = drive(app_module, adapter="uncertainty")[-1]
+    assert 'class="adapter-response"' in final[3]["content"]
+    clean = app_module._clean_content(final[3]["content"])
+    assert clean and "adapter-response" not in clean
+
+
+def test_followup_display_round_trips(app_module):
+    """The styling wrapper must escape HTML-ish protocol text (e.g.
+    <requirements>) for display, and _clean_content must recover the exact
+    original for prompting."""
+    followup = app_module.adapter_followup("requirement-check", "Must rhyme & scan.")
+    shown = app_module.followup_display(followup)
+    assert "<requirements>" not in shown  # escaped for display
+    assert app_module._clean_content(shown) == followup
+
+
+def test_user_submit_locks_input(app_module):
+    upd_input, history, upd_btn = app_module.user_submit("hi", [])
+    assert upd_input["visible"] is False, "input must hide after the single message"
+    assert upd_btn["visible"] is False, "Send must hide after the single message"
+    assert history[-1] == {"role": "user", "content": "hi"}
 
 
 def test_turn1_has_no_adapter_turn2_has_adapter(app_module):
@@ -136,7 +163,8 @@ def test_turn2_messages_are_task_response_followup(app_module):
 def test_streaming_is_cumulative_within_each_turn(app_module):
     states = drive(app_module)
     turn1 = [s[1]["content"] for s in states if len(s) == 2]
-    turn2 = [s[3]["content"] for s in states if len(s) == 4]
+    # turn-2 partials are wrapped for styling; compare the unwrapped text
+    turn2 = [app_module._clean_content(s[3]["content"]) for s in states if len(s) == 4]
     for chunk_list in (turn1, turn2):
         assert chunk_list, "no streamed states for a turn"
         for prev, cur in zip(chunk_list, chunk_list[1:]):
@@ -217,16 +245,18 @@ def test_rules_ignored_for_other_adapters(app_module):
 NOTE_RE = __import__("re").compile(r"⚡ `KV cache: (\d+)/(\d+) prompt tokens reused \((\d+)% hit\)`")
 
 
-def test_cache_note_under_both_user_messages(app_module):
+def test_cache_note_under_both_responses(app_module):
     final = drive(app_module, message="my task", adapter="uncertainty")[-1]
-    for i in (0, 2):
-        assert NOTE_RE.search(final[i]["content"]), f"no cache note on message {i}"
+    for i in (1, 3):  # the notes belong to the responses...
+        assert NOTE_RE.search(final[i]["content"]), f"no cache note on response {i}"
+    for i in (0, 2):  # ...not to the prompts
+        assert not NOTE_RE.search(final[i]["content"]), f"cache note on prompt {i}"
 
 
 def test_turn1_is_cold_turn2_reuses_prefix(app_module):
     final = drive(app_module, message="my task", adapter="uncertainty")[-1]
-    h1, t1, _ = map(int, NOTE_RE.search(final[0]["content"]).groups())
-    h2, t2, _ = map(int, NOTE_RE.search(final[2]["content"]).groups())
+    h1, t1, _ = map(int, NOTE_RE.search(final[1]["content"]).groups())
+    h2, t2, _ = map(int, NOTE_RE.search(final[3]["content"]).groups())
     assert h1 == 0 and t1 > 0, "turn 1 must report a cold cache"
     assert 0 < h2 < t2, "adapter turn must reuse a proper prefix of its prompt"
     # decode tokens from turn 1 must be reused, not just its prompt: the
@@ -235,14 +265,22 @@ def test_turn1_is_cold_turn2_reuses_prefix(app_module):
     assert h2 > t1, "adapter turn must also reuse turn 1's generated tokens"
 
 
-def test_cache_notes_never_reach_the_prompt(app_module):
-    # a second interaction whose incoming history carries notes from the first
+def test_ui_decoration_never_reaches_the_prompt(app_module):
+    # a second interaction whose incoming history carries notes and the
+    # styled adapter prompt from the first (the UI is single-shot, but the
+    # prompt path must stay clean regardless)
     final = drive(app_module, message="first question", adapter="uncertainty")[-1]
     history = final + [{"role": "user", "content": "second question"}]
     list(app_module.bot_respond(history, "uncertainty", "", "", 64, 0.7))
     for m in app_module._fake_tokenizer.last_messages:
         assert "KV cache:" not in m["content"]
+        assert "adapter-prompt" not in m["content"]
+        assert "adapter-response" not in m["content"]
     assert app_module._fake_tokenizer.last_messages[0]["content"] == "first question"
+    # the styled follow-up from interaction 1 round-trips back to clean text
+    assert app_module._fake_tokenizer.last_messages[2]["content"] == (
+        app_module.adapter_followup("uncertainty", "")
+    )
 
 
 def test_adapter_turn_is_greedy(app_module):
