@@ -67,6 +67,30 @@ def test_every_adapter_has_a_followup(app_module):
         assert text and text.strip(), f"empty follow-up for {choice}"
 
 
+# aLoRA invocation markers from adapter_map in the model's
+# chat_template.jinja: the template splices the activation token in where
+# this text appears in the final user turn. Without the marker the adapter
+# activates only at the generation boundary and answers in prose instead of
+# its trained JSON protocol. (context-attribution is LoRA-flavored: no marker.)
+INVOCATION_TEXT = {
+    "requirement-check": "<requirements>",
+    "uncertainty": "<certainty>",
+    "guardian-core": "<guardian>",
+    "factuality-detection": "<guardian>",
+    "factuality-correction": "<guardian>",
+    "policy-guardrails": "<guardian>",
+}
+
+
+@pytest.mark.parametrize("adapter", sorted(INVOCATION_TEXT))
+def test_alora_followups_carry_their_invocation_marker(app_module, adapter):
+    followup = app_module.adapter_followup(adapter, "some rule")
+    assert INVOCATION_TEXT[adapter] in followup, (
+        f"{adapter}'s follow-up must contain {INVOCATION_TEXT[adapter]} so the "
+        "chat template can splice in the activation token"
+    )
+
+
 # ---------------------------------------------------------------- UI construction
 
 def test_ui_builds(app_module):

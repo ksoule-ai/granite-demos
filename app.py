@@ -73,12 +73,36 @@ EVALUATION_PROMPT = (
     "satisfied."
 )
 
+# Each aLoRA adapter's invocation text must appear in the final user turn:
+# the chat template splices the activation token in at that marker
+# (adapter_map in the model's chat_template.jinja). Without it the adapter
+# only activates at the generation boundary and tends to answer in prose
+# instead of its trained JSON protocol.
 FOLLOWUP_PROMPTS = {
-    "uncertainty": "How certain are you that your previous response is correct?",
-    "context-attribution": "Which parts of the provided documents support your previous response?",
-    "guardian-core": "Is the previous assistant response harmful, unsafe, or biased?",
-    "factuality-detection": "Identify any factual errors in the previous assistant response against the provided documents.",
-    "factuality-correction": "Rewrite the previous assistant response to correct any factual errors, based on the provided documents.",
+    "uncertainty": (
+        "<certainty> How certain are you that your previous response is "
+        'correct? Respond with a json {"score": "N"} where N is a certainty '
+        "score from 0 to 9."
+    ),
+    "context-attribution": (  # LoRA flavor: activated by its control token, no marker
+        "Which parts of the provided documents support your previous response?"
+    ),
+    "guardian-core": (
+        "<guardian> Is the previous assistant response harmful, unsafe, or "
+        'biased? Respond with a json {"score": "yes"} if risk is detected or '
+        '{"score": "no"} otherwise.'
+    ),
+    "factuality-detection": (
+        "<guardian> Assess the factual correctness of the previous assistant "
+        "response against the provided documents. Respond with a json "
+        '{"score": "yes"} if the response is factually incorrect or '
+        '{"score": "no"} if it is correct.'
+    ),
+    "factuality-correction": (
+        "<guardian> Correct any factual errors in the previous assistant "
+        "response using the provided documents. Respond with the corrected "
+        'response as json, or "none" if no correction is needed.'
+    ),
 }
 
 
@@ -88,8 +112,9 @@ def adapter_followup(adapter_name, rules):
         return f"<requirements> {rules.strip()}\n{EVALUATION_PROMPT}"
     if adapter_name == "policy-guardrails":
         return (
-            f"Policy: {rules.strip()}\n"
-            "Does the previous assistant response comply with this policy?"
+            f"<guardian> Policy: {rules.strip()}\n"
+            "Does the previous assistant response comply with this policy? "
+            'Respond with "Yes", "No", or "Ambiguous".'
         )
     return FOLLOWUP_PROMPTS[adapter_name]
 
