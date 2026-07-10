@@ -360,7 +360,14 @@ greedy; only the drafts use your temperature.
 
     with gr.Row():
         with gr.Column(scale=3):
-            chatbot = gr.Chatbot(label="Conversation", height=480)
+            chatbot = gr.Chatbot(
+                label="Conversation",
+                height=480,
+                # Drafts, checker verdicts, and judge verdicts are separate
+                # assistant messages; without this Gradio folds consecutive
+                # same-role messages into one visual bubble.
+                group_consecutive_messages=False,
+            )
             user_input = gr.Textbox(
                 placeholder="Type your message…",
                 label="Your message",
