@@ -283,7 +283,7 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
     def draft_display(i, text):
         # Display-only: the judge and the generation context see the clean
         # draft, without the attempt label.
-        return f"*(Attempt {i})*\n\n{text}" if use_ivr else text
+        return f"*(Attempt {i})*\n{text}" if use_ivr else text
 
     for event in run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget):
         kind = event[0]
@@ -322,11 +322,20 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
             note = (
                 f"✅ IVR loop converged on attempt {index + 1} of {attempts}."
                 if success
-                else f"⚠️ Attempt budget exhausted after {attempts} tries; showing attempt {index + 1}."
+                else f"⚠️ Attempt budget exhausted after {attempts} tries; will revert "
+                     f"to attempt {index + 1} for the rest of the conversation."
             )
-            history = drop_status(history) + [
-                {"role": "assistant", "content": meta_display(note)}
-            ]
+            last = history[-1]["content"]
+            if last.startswith('<span class="meta-note">'):
+                # Join the outcome onto the requirement-check score bubble.
+                # <br>, not \n: markdown line breaks don't render inside a
+                # raw HTML span.
+                merged = f"{last[:-len('</span>')]}<br>{note}</span>"
+                history = history[:-1] + [{"role": "assistant", "content": merged}]
+            else:
+                history = drop_status(history) + [
+                    {"role": "assistant", "content": meta_display(note)}
+                ]
             status_pending = False
         elif kind == "verdict":
             text = event[2]

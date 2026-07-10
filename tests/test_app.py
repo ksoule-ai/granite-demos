@@ -199,8 +199,8 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     attempts = [t for t in texts if fake_model.base_answer in t]
     assert len(attempts) == 2, texts
     # drafts carry only the italic attempt label; each checker verdict is its own bubble
-    assert attempts[0] == f"*(Attempt 1)*\n\n{fake_model.base_answer}"
-    assert attempts[1] == f"*(Attempt 2)*\n\n{fake_model.base_answer}"
+    assert attempts[0] == f"*(Attempt 1)*\n{fake_model.base_answer}"
+    assert attempts[1] == f"*(Attempt 2)*\n{fake_model.base_answer}"
     checks = [t for t in texts if "requirement_check" in t]
     assert len(checks) == 2, texts
     # format: {json} — ✅/❌ note
@@ -209,7 +209,9 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     assert all(t.index('{"requirement_check"') < t.index("—") for t in checks), checks
     # bubbles interleave: draft, check, draft, check
     assert texts.index(checks[0]) == texts.index(attempts[0]) + 1
-    assert any("converged on attempt 2 of 2" in t for t in texts)
+    # the IVR outcome shares the final check's bubble rather than its own
+    assert "converged on attempt 2 of 2" in checks[1]
+    assert not any("converged" in t for t in texts if t not in checks)
     # the requirement-check aLoRA judged each attempt
     assert len(fake_model.calls_for("requirement-check")) == 2
 
@@ -229,7 +231,11 @@ def test_ivr_reports_budget_exhaustion(app_module, fake_model):
     final = drive(app_module, adapters=("requirement-check",),
                   rules="Impossible requirement.", loop_budget=3)[-1]
     texts = assistant_texts(final)
-    assert any("budget exhausted" in t.lower() for t in texts), texts
+    exhausted = [t for t in texts if "budget exhausted" in t.lower()]
+    assert exhausted, texts
+    # new wording, merged into the last requirement-check bubble
+    assert "will revert to attempt 1 for the rest of the conversation" in exhausted[0]
+    assert '{"requirement_check"' in exhausted[0]
     assert len(fake_model.calls_for("requirement-check")) == 3
 
 
