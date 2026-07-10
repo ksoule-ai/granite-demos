@@ -402,6 +402,7 @@ greedy; only the drafts use your temperature.
                 # assistant messages; without this Gradio folds consecutive
                 # same-role messages into one visual bubble.
                 group_consecutive_messages=False,
+                buttons=[],  # no copy icon under messages
             )
             user_input = gr.Textbox(
                 placeholder="Type your message…",
