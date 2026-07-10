@@ -75,11 +75,16 @@ class FakeSwitchModel:
     def eval(self):
         return self
 
+    # The Space installs mellea without the [hf] extra, so peft is absent and
+    # transformers' PEFT integration raises this (not "No adapter loaded",
+    # which is the only ValueError mellea's lock helper swallows). The glue
+    # must never reach these on switch checkpoints — regression for the
+    # "PEFT is not installed" crash seen on the Space.
     def active_adapters(self):
-        raise ValueError("No adapter loaded. Please load an adapter first.")
+        raise ValueError("PEFT is not installed. Please install it with `pip install peft`")
 
     def set_adapter(self, *args, **kwargs):
-        raise ValueError("No adapter loaded. Please load an adapter first.")
+        raise ValueError("PEFT is not installed. Please install it with `pip install peft`")
 
     def generate(self, inputs, **kwargs):
         input_ids = inputs if torch.is_tensor(inputs) else inputs["input_ids"]

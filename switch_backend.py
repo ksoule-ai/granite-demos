@@ -170,11 +170,24 @@ class SwitchBackend(LocalHFBackend):
         return super().unload_adapter(adapter_qualified_name)
 
     # ------------------------------------------------------------- generation
+    def _has_peft_adapters(self):
+        return any(
+            not isinstance(a, SwitchEmbeddedAdapter)
+            for a in self._loaded_adapters.values()
+        )
+
     def _generate_with_adapter_lock(self, adapter_name, generate_func, *args, **kwargs):
-        if isinstance(self._added_adapters.get(adapter_name), SwitchEmbeddedAdapter):
-            # Activation happens via the control token already present in the
-            # rendered prompt; PEFT set_adapter/asserts don't apply. Keep the
-            # lock: the parent serializes all generation through it.
+        embedded = isinstance(
+            self._added_adapters.get(adapter_name), SwitchEmbeddedAdapter
+        )
+        if embedded or (adapter_name == "" and not self._has_peft_adapters()):
+            # Embedded adapters activate via the control token already present
+            # in the rendered prompt, and with no PEFT adapter ever loaded the
+            # plain path has nothing to deactivate — in both cases the parent's
+            # set_adapter([]) dance would require the peft package (it raises
+            # "PEFT is not installed" rather than the "No adapter loaded"
+            # ValueError the parent swallows). Keep the lock: the parent
+            # serializes all generation through it.
             with self._generation_lock:
                 return generate_func(*args, **kwargs)
         return super()._generate_with_adapter_lock(
