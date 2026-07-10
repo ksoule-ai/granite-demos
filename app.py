@@ -1,5 +1,4 @@
 import asyncio
-import html
 import queue
 from threading import Thread
 
@@ -79,14 +78,11 @@ def _content_text(content):
 
 
 # ------------------------------------------------------------------ rendering
-# Adapter/verdict bubbles are tinted purple: their content is wrapped in a
-# marker span the CSS targets via :has(). The wrappers are UI-only.
-def verdict_display(text):
-    return f'<span class="adapter-response">{html.escape(text)}</span>'
-
-
+# Transient progress notes render as italic markdown with a ⏳ marker; they
+# are replaced by the next real event and must never survive in the final
+# history (see bot_respond).
 def status_display(text):
-    return f'<span class="adapter-prompt">{html.escape(text)}</span>'
+    return f"⏳ *{text}*"
 
 
 ATTEMPT_NOTE = {True: "✅ requirement satisfied", False: "❌ requirement not satisfied"}
@@ -151,14 +147,14 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
     Otherwise a single plain generation runs. Each remaining selected adapter
     then judges the final answer via its Mellea intrinsic. Yields events:
 
-      ("status", text)                          — progress notes for the UI
-      ("partial", i, text)                      — attempt i's draft so far
-                                                  (accumulated, token-streamed)
-      ("attempt", i, text, passed|None[, json]) — a finished attempt (passed
-                                                  is None outside the IVR loop;
-                                                  json is the checker's verdict)
-      ("final", index, success, attempts)       — which attempt was selected
-      ("verdict", adapter, text)                — a judge adapter's verdict
+      ("status", text)                    — progress notes for the UI
+      ("partial", i, text)                — attempt i's draft so far
+                                            (accumulated, token-streamed)
+      ("attempt", i, text)                — a finished draft attempt
+      ("check", i, passed, json)          — the requirement-check aLoRA's
+                                            verdict on attempt i (IVR only)
+      ("final", index, success, attempts) — which attempt was selected
+      ("verdict", adapter, text)          — a judge adapter's verdict
     """
     gen_options = {"max_new_tokens": int(max_new_tokens)}
     if temperature > 0:
@@ -200,7 +196,8 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             # verdict (e.g. {"requirement_check": {"score": 0.97}}).
             verdicts = " ".join(v.reason for v in validations if v.reason)
             attempts.append((draft_text, draft_ctx))
-            yield ("attempt", i, draft_text, passed, verdicts)
+            yield ("attempt", i, draft_text)
+            yield ("check", i, passed, verdicts)
             if passed:
                 success = True
                 break
@@ -217,7 +214,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
                 yield ("partial", 1, item[1])
             else:
                 _, draft_text, final_ctx = item
-        yield ("attempt", 1, draft_text, None)
+        yield ("attempt", 1, draft_text)
 
     for adapter in adapters:
         # Verdict bubbles show the JSON mellea parses out of the adapter's
@@ -230,7 +227,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             yield (
                 "verdict",
                 "uncertainty",
-                f'uncertainty → {{"certainty": {certainty:.2f}}} — '
+                f'uncertainty → `{{"certainty": {certainty:.2f}}}` — '
                 f"the model is {verdict} in this answer.",
             )
         elif adapter == "guardian-core":
@@ -240,7 +237,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             yield (
                 "verdict",
                 "guardian-core",
-                f'guardian-core (harm) → {{"guardian": {{"score": {risk:.2f}}}}} — {verdict}.',
+                f'guardian-core (harm) → `{{"guardian": {{"score": {risk:.2f}}}}}` — {verdict}.',
             )
 
 
@@ -258,10 +255,10 @@ def user_submit(message, history):
 def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, loop_budget):
     """Render run_switch's event stream into the chat history.
 
-    Attempts appear as normal assistant bubbles (failed IVR attempts carry a
-    ❌ note, the selected one a ✅). Adapter verdicts and progress notes are
-    purple (see verdict_display / status_display / the css). A status bubble
-    is replaced by the next real event.
+    Every response gets its own bubble: each draft attempt, each
+    requirement-check verdict (❌/✅ + verdict JSON), the IVR outcome note,
+    and each judge adapter's verdict. Progress notes (⏳, italic) are
+    transient — the next real event replaces them.
     """
     # Hidden Gradio textboxes arrive as None, not ""
     rules = rules or ""
@@ -292,17 +289,19 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 status_pending = False
                 partial_open = True
         elif kind == "attempt":
-            _, i, text, passed, verdicts = (*event, "")[:5]
-            if passed is not None:
-                note = f"attempt {i}: {ATTEMPT_NOTE[passed]}"
-                if verdicts:
-                    note += f" — requirement-check → `{verdicts}`"
-                text = f"{text}\n\n*{note}*"
+            text = event[2]
             if partial_open:  # finalize the streaming bubble in place
                 history = history[:-1] + [{"role": "assistant", "content": text}]
                 partial_open = False
             else:
                 history = drop_status(history) + [{"role": "assistant", "content": text}]
+            status_pending = False
+        elif kind == "check":
+            _, i, passed, verdicts = event
+            note = f"attempt {i}: {ATTEMPT_NOTE[passed]}"
+            if verdicts:
+                note += f" — requirement-check → `{verdicts}`"
+            history = drop_status(history) + [{"role": "assistant", "content": note}]
             status_pending = False
         elif kind == "final":
             _, index, success, attempts = event
@@ -311,15 +310,11 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 if success
                 else f"⚠️ Attempt budget exhausted after {attempts} tries; showing attempt {index + 1}."
             )
-            history = drop_status(history) + [
-                {"role": "assistant", "content": verdict_display(note)}
-            ]
+            history = drop_status(history) + [{"role": "assistant", "content": note}]
             status_pending = False
         elif kind == "verdict":
             text = event[2]
-            history = drop_status(history) + [
-                {"role": "assistant", "content": verdict_display(text)}
-            ]
+            history = drop_status(history) + [{"role": "assistant", "content": text}]
             status_pending = False
         yield history
     if status_pending:
@@ -339,24 +334,6 @@ def update_visibility(adapter_choices):
     return gr.update(visible=show_rules), gr.update(visible=show_rules)
 
 
-CSS = """
-/* the whole bubble turns purple; inner elements stay transparent so the
-   text never shows its own background patch */
-.message:has(.adapter-prompt),
-.message:has(.adapter-response) {
-    background-color: #c4b5fd !important;
-    border-color: #a78bfa !important;
-    color: #1f2937 !important;
-}
-.adapter-prompt, .adapter-response,
-.message:has(.adapter-prompt) *,
-.message:has(.adapter-response) * {
-    background: transparent !important;
-    color: inherit !important;
-}
-.adapter-prompt { font-style: italic; }
-"""
-
 with gr.Blocks(title="Granite Switch 4.1 8B Demo") as demo:
     gr.Markdown(
         """
@@ -370,9 +347,10 @@ with [Mellea](https://docs.mellea.ai)'s HuggingFace backend:
 2. With **requirement-check** selected, Mellea runs an
    **instruct → validate → repair** loop: every draft is judged by the
    embedded requirement-check aLoRA and regenerated until it passes or the
-   attempt budget runs out. Each attempt appears in the chat with its verdict.
-3. **uncertainty** and **guardian-core** then judge the final answer; their
-   verdicts appear in *purple*. Use **Clear** to start over.
+   attempt budget runs out. Each draft streams into its own bubble, followed
+   by the checker's verdict in a separate bubble.
+3. **uncertainty** and **guardian-core** then judge the final answer, each
+   in its own bubble. Use **Clear** to start over.
 
 The adapters are activated by control tokens spliced in by the model's chat
 template — no separate adapter weights are loaded. Judged turns are always
@@ -455,4 +433,4 @@ greedy; only the drafts use your temperature.
 
 
 if __name__ == "__main__":
-    demo.launch(css=CSS)
+    demo.launch()

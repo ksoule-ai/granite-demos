@@ -122,9 +122,8 @@ def test_judge_adapter_activates_and_reports(app_module, fake_model):
     # base answer bubble + purple verdict bubble
     texts = assistant_texts(final)
     assert fake_model.base_answer in texts[0]
-    assert 'class="adapter-response"' in texts[-1]
     # the verdict bubble carries the parsed JSON, not just prose
-    assert '{&quot;certainty&quot;: 0.85}' in texts[-1] or '{"certainty": 0.85}' in texts[-1]
+    assert '{"certainty": 0.85}' in texts[-1]
     # the uncertainty control token reached the model exactly once
     assert len(fake_model.calls_for("uncertainty")) == 1
     ids = fake_model.calls_for("uncertainty")[0][1]
@@ -139,13 +138,23 @@ def test_guardian_verdict(app_module, fake_model):
     assert CONTROL_TOKENS["guardian-core"] in fake_model.calls_for("guardian-core")[0][1]
 
 
-def test_multiple_judges_run_in_selection_order(app_module, fake_model):
+def test_multiple_judges_get_their_own_bubbles(app_module, fake_model):
     final = drive(app_module, adapters=("uncertainty", "guardian-core"))[-1]
-    verdicts = [t for t in assistant_texts(final) if 'adapter-response' in t]
-    assert len(verdicts) == 2
-    assert "uncertainty" in verdicts[0] and "guardian-core" in verdicts[1]
+    verdicts = [
+        t for t in assistant_texts(final)
+        if t.startswith("uncertainty →") or t.startswith("guardian-core")
+    ]
+    assert len(verdicts) == 2, assistant_texts(final)
+    assert verdicts[0].startswith("uncertainty →")
+    assert verdicts[1].startswith("guardian-core")
     judged = [adapter for adapter, _, _ in fake_model.calls if adapter]
     assert judged == ["uncertainty", "guardian-core"]
+
+
+def test_no_html_styling_in_bubbles(app_module, fake_model):
+    """Bubbles are plain markdown — no span wrappers / custom colors."""
+    final = drive(app_module, adapters=("uncertainty", "guardian-core"))[-1]
+    assert not any("<span" in t for t in assistant_texts(final))
 
 
 def test_draft_streams_cumulatively_into_one_bubble(app_module, fake_model):
@@ -155,7 +164,7 @@ def test_draft_streams_cumulatively_into_one_bubble(app_module, fake_model):
     states = drive(app_module, adapters=("uncertainty",))
     versions = []
     for state in states:
-        texts = [t for t in assistant_texts(state) if "adapter-" not in t]
+        texts = [t for t in assistant_texts(state) if fake_model.base_answer.startswith(t)]
         if texts:
             versions.append(texts[0])
         assert len(texts) <= 1, "streaming must update one bubble, not append"
@@ -167,7 +176,7 @@ def test_draft_streams_cumulatively_into_one_bubble(app_module, fake_model):
 
 def test_no_status_bubbles_left_behind(app_module, fake_model):
     final = drive(app_module, adapters=("uncertainty", "guardian-core"))[-1]
-    assert not any('adapter-prompt' in t for t in assistant_texts(final))
+    assert not any("⏳" in t for t in assistant_texts(final))
 
 
 # --------------------------------------------------------------------- IVR
@@ -179,9 +188,15 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     texts = assistant_texts(final)
     attempts = [t for t in texts if fake_model.base_answer in t]
     assert len(attempts) == 2, texts
-    assert "❌" in attempts[0] and "✅" in attempts[1]
-    # each attempt note carries the checker's JSON verdict
-    assert all("requirement_check" in t for t in attempts), attempts
+    # drafts are clean bubbles; each checker verdict is its own bubble
+    assert all(t == fake_model.base_answer for t in attempts)
+    checks = [t for t in texts if "requirement-check →" in t]
+    assert len(checks) == 2, texts
+    assert "❌" in checks[0] and "✅" in checks[1]
+    # each check bubble carries the checker's JSON verdict
+    assert all("requirement_check" in t for t in checks), checks
+    # bubbles interleave: draft, check, draft, check
+    assert texts.index(checks[0]) == texts.index(attempts[0]) + 1
     assert any("converged on attempt 2 of 2" in t for t in texts)
     # the requirement-check aLoRA judged each attempt
     assert len(fake_model.calls_for("requirement-check")) == 2
