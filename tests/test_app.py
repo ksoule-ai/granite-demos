@@ -388,6 +388,28 @@ def test_kv_judge_reuses_draft_prefix(app_module, fake_model):
     assert "`" not in bubble  # no markdown inside meta spans
 
 
+def test_kv_judge_reuses_draft_decode_tokens(app_module, fake_model):
+    """Judge prompts are re-expressed on the draft's actual generated ids
+    (BPE re-encode is not identity), so reuse must extend past the draft's
+    prompt INTO its decode tokens — regression for the low certainty hit
+    rates observed on the Space."""
+    drive(app_module, adapters=("uncertainty",))
+    draft_prompt_ids = fake_model.cache_calls[0][2]
+    _, cache_len, judge_ids = next(
+        c for c in fake_model.cache_calls if c[0] == "uncertainty"
+    )
+    assert cache_len > len(draft_prompt_ids), (
+        f"judge reused only {cache_len} tokens — decode tokens not reused "
+        f"(draft prompt alone is {len(draft_prompt_ids)})"
+    )
+    # nearly the whole draft sequence is reused (all but the last token,
+    # which generate never feeds forward)
+    identity = _draft_identity(app_module, fake_model, draft_prompt_ids)
+    assert cache_len == len(identity) - 1
+    # the rewritten judge prompt literally starts with the draft sequence
+    assert judge_ids[:len(identity)] == identity
+
+
 def test_kv_second_attempt_reuses_prompt_prefix(app_module, fake_model):
     fake_model.script_drafts(
         [f"{fake_model.base_answer} (v1)", f"{fake_model.base_answer} (v2)"]

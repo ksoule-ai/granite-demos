@@ -139,9 +139,13 @@ class SwitchBackend(LocalHFBackend):
         self._adapter_source = self._hf_model_id
         # Per-interaction KV prefix reuse (inert until begin_interaction()):
         # the interaction's DynamicCache, the token ids its prefix was
-        # computed from, and the (hits, total) stats per generation.
+        # computed from, the last draft's ids/text (for re-expressing judge
+        # prompts on the draft's actual decode tokens), and the (hits, total)
+        # stats per generation.
         self._kv_cache = None
         self._kv_identity = None
+        self._kv_draft_ids = None
+        self._kv_draft_text = None
         self._kv_stats = []
 
     def register_embedded_adapters(self, intrinsic_name: str | None = None) -> list[str]:
@@ -202,12 +206,16 @@ class SwitchBackend(LocalHFBackend):
         """Enable KV prefix reuse until end_interaction(); resets any state."""
         self._kv_cache = DynamicCache()
         self._kv_identity = None
+        self._kv_draft_ids = None
+        self._kv_draft_text = None
         self._kv_stats = []
 
     def end_interaction(self):
         """Drop the interaction cache (frees its GPU tensors)."""
         self._kv_cache = None
         self._kv_identity = None
+        self._kv_draft_ids = None
+        self._kv_draft_text = None
         self._kv_stats = []
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -217,6 +225,41 @@ class SwitchBackend(LocalHFBackend):
         the last pop, in generation order (generation is serialized)."""
         stats, self._kv_stats = self._kv_stats, []
         return stats
+
+    def _maybe_extend_draft(self, prompt_ids):
+        """Re-express an intrinsic prompt on the draft's actual token ids.
+
+        Judge prompts are re-tokenized renders of the conversation, and BPE
+        re-encoding of the generated answer rarely reproduces the ids the
+        model actually decoded — measured overlap would stop a few tokens
+        into the answer, discarding the draft's decode KV (the bulk of the
+        reusable prefix). When the judge prompt's text literally extends the
+        draft sequence's text, rebuild its ids as draft_ids +
+        retokenized(remainder): identical text, and the token prefix now
+        matches the cache. (Ported from the pre-mellea app's
+        _extend_sequence.) Returns prompt_ids unchanged when the text isn't
+        an extension (e.g. after the conversation diverged).
+        """
+        if self._kv_draft_ids is None:
+            return prompt_ids
+        tok = self._tokenizer
+        text = tok.decode(
+            prompt_ids[0], skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        if len(text) <= len(self._kv_draft_text) or not text.startswith(self._kv_draft_text):
+            return prompt_ids
+        suffix = tok(
+            text[len(self._kv_draft_text):],
+            return_tensors="pt", add_special_tokens=False,
+        ).input_ids
+        return torch.cat(
+            [
+                self._kv_draft_ids.unsqueeze(0).to(prompt_ids.device),
+                suffix.to(prompt_ids.device),
+            ],
+            dim=1,
+        )
 
     def _generate_with_kv_reuse(self, generate_func, args, kwargs):
         """Call generate_func with the interaction cache's shared prefix.
@@ -274,6 +317,12 @@ class SwitchBackend(LocalHFBackend):
                 usable = False
 
             if usable:
+                if mode == "intrinsic":
+                    # Safe only here: generate_with_transformers slices with
+                    # the ids we hand it. The standard path's decode slicing
+                    # holds mellea's original tensor, so drafts are never
+                    # rewritten.
+                    prompt_ids = self._maybe_extend_draft(prompt_ids)
                 total = int(prompt_ids.shape[1])
                 hits = 0
                 if self._kv_identity is not None:
@@ -297,6 +346,7 @@ class SwitchBackend(LocalHFBackend):
                     }
                 else:
                     generate_input = dict(args[2])
+                    generate_input["input_tokens"] = prompt_ids
                     generate_input["past_key_values"] = self._kv_cache
                     generate_input["attention_mask"] = mask
                     call_args = (*args[:2], generate_input, *args[3:])
@@ -324,6 +374,14 @@ class SwitchBackend(LocalHFBackend):
                     # Full prompt + generated ids: exactly what the cache holds
                     # (minus the last token generate never feeds forward).
                     self._kv_identity = result.sequences[0].detach()
+                    # Remember the draft for _maybe_extend_draft. decode() is
+                    # faithful for byte-level BPE, so the text form lets judge
+                    # prompts be re-expressed on these exact ids.
+                    self._kv_draft_ids = self._kv_identity
+                    self._kv_draft_text = self._tokenizer.decode(
+                        self._kv_draft_ids, skip_special_tokens=False,
+                        clean_up_tokenization_spaces=False,
+                    )
                 else:
                     # generate_with_transformers returns a ChatCompletionResponse
                     # (no sequences); the prompt is the reusable-identity part.
@@ -332,6 +390,8 @@ class SwitchBackend(LocalHFBackend):
                 logger.warning("KV identity update failed; resetting cache", exc_info=True)
                 self._kv_cache = DynamicCache()
                 self._kv_identity = None
+                self._kv_draft_ids = None
+                self._kv_draft_text = None
         return result
 
     # ------------------------------------------------------------- generation
