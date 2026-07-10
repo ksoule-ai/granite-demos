@@ -201,11 +201,12 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     # drafts carry only the italic attempt label; each checker verdict is its own bubble
     assert attempts[0] == f"*(Attempt 1)*\n\n{fake_model.base_answer}"
     assert attempts[1] == f"*(Attempt 2)*\n\n{fake_model.base_answer}"
-    checks = [t for t in texts if "requirement-check →" in t]
+    checks = [t for t in texts if "requirement_check" in t]
     assert len(checks) == 2, texts
-    assert "❌" in checks[0] and "✅" in checks[1]
-    # each check bubble carries the checker's JSON verdict
-    assert all("requirement_check" in t for t in checks), checks
+    # format: {json} — ✅/❌ note
+    assert "— ❌ requirement not satisfied" in checks[0]
+    assert "— ✅ requirement satisfied" in checks[1]
+    assert all(t.index('{"requirement_check"') < t.index("—") for t in checks), checks
     # bubbles interleave: draft, check, draft, check
     assert texts.index(checks[0]) == texts.index(attempts[0]) + 1
     assert any("converged on attempt 2 of 2" in t for t in texts)

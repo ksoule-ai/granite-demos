@@ -309,10 +309,10 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 history = drop_status(history) + [{"role": "assistant", "content": text}]
             status_pending = False
         elif kind == "check":
-            _, i, passed, verdicts = event
-            note = f"attempt {i}: {ATTEMPT_NOTE[passed]}"
+            _, _i, passed, verdicts = event
+            note = ATTEMPT_NOTE[passed]
             if verdicts:
-                note += f" — requirement-check → {verdicts}"
+                note = f"{verdicts} — {note}"
             history = drop_status(history) + [
                 {"role": "assistant", "content": meta_display(note)}
             ]
