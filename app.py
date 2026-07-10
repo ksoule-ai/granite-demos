@@ -181,6 +181,9 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
       ("attempt", i, text, kv)            — a finished draft attempt
       ("check", i, passed, json, kv)      — the requirement-check aLoRA's
                                             verdict on attempt i (IVR only)
+      ("repeat", i)                       — attempt i was identical to an
+                                            already-failed draft; verdict
+                                            reused, loop continues
       ("final", index, success, attempts) — which attempt was selected
       ("verdict", adapter, text, kv)      — a judge adapter's verdict
 
@@ -236,6 +239,7 @@ def _run_interaction(prompt, adapters, rules, gen_options, loop_budget, use_ivr,
             "validated by the requirement-check aLoRA)…",
         )
         attempts = []
+        judged = set()  # draft texts the checker has already failed
         success = False
         for i in range(1, budget + 1):
             draft_text, draft_ctx = "", None
@@ -245,18 +249,26 @@ def _run_interaction(prompt, adapters, rules, gen_options, loop_budget, use_ivr,
                 else:  # independent resample per attempt: fresh ctx each time
                     _, draft_text, draft_ctx = item
             kv_draft = pop_kv()  # must pop before validate generates
+            attempts.append((draft_text, draft_ctx))
+            yield ("attempt", i, draft_text, kv_draft)
+            if draft_text in judged:
+                # Re-judging a draft identical to an already-failed one is
+                # futile — and, with KV reuse, numerically flaky: bf16
+                # prefill noise can flip a borderline verdict on the exact
+                # same text. Reuse the fail and roll the dice again.
+                yield ("repeat", i)
+                continue
             validations = mfuncs.validate([requirement], draft_ctx, backend)
             kv_check = pop_kv()
             passed = all(bool(v) for v in validations)
             # For aLoRA validation, reason is the adapter's parsed JSON
             # verdict (e.g. {"requirement_check": {"score": 0.97}}).
             verdicts = " ".join(v.reason for v in validations if v.reason)
-            attempts.append((draft_text, draft_ctx))
-            yield ("attempt", i, draft_text, kv_draft)
             yield ("check", i, passed, verdicts, kv_check)
             if passed:
                 success = True
                 break
+            judged.add(draft_text)
         # On exhaustion keep the first draft, matching stock rejection
         # sampling's select_from_failure.
         chosen = len(attempts) - 1 if success else 0
@@ -360,6 +372,11 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 partial_open = False
             else:
                 history = drop_status(history) + [{"role": "assistant", "content": text}]
+            status_pending = False
+        elif kind == "repeat":
+            history = drop_status(history) + [
+                {"role": "assistant", "content": meta_display("🔁 identical attempt — retrying")}
+            ]
             status_pending = False
         elif kind == "check":
             _, _i, passed, verdicts, kv = (*event, None)[:5]

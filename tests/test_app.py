@@ -192,6 +192,8 @@ def test_no_status_bubbles_left_behind(app_module, fake_model):
 # --------------------------------------------------------------------- IVR
 
 def test_ivr_retries_until_requirement_passes(app_module, fake_model):
+    drafts = [f"{fake_model.base_answer} (v1)", f"{fake_model.base_answer} (v2)"]
+    fake_model.script_drafts(drafts)
     fake_model.script_judge("requirement-check", ['{"score": "no"}', '{"score": "yes"}'])
     final = drive(app_module, adapters=("requirement-check",),
                   rules="Must mention anorthosite.")[-1]
@@ -200,8 +202,8 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     assert len(attempts) == 2, texts
     # drafts carry the italic attempt label plus a KV note; each checker
     # verdict is its own bubble
-    assert attempts[0].startswith(f"*(Attempt 1)*\n{fake_model.base_answer}")
-    assert attempts[1].startswith(f"*(Attempt 2)*\n{fake_model.base_answer}")
+    assert attempts[0].startswith(f"*(Attempt 1)*\n{drafts[0]}")
+    assert attempts[1].startswith(f"*(Attempt 2)*\n{drafts[1]}")
     assert all(KV_NOTE_RE.search(t) for t in attempts)
     checks = [t for t in texts if "requirement_check" in t]
     assert len(checks) == 2, texts
@@ -227,6 +229,9 @@ def test_ivr_stops_at_first_pass(app_module, fake_model):
 
 
 def test_ivr_reports_budget_exhaustion(app_module, fake_model):
+    fake_model.script_drafts(
+        [f"{fake_model.base_answer} (v{i})" for i in (1, 2, 3)]
+    )
     fake_model.script_judge(
         "requirement-check", ['{"score": "no"}'] * 3
     )
@@ -255,6 +260,26 @@ def test_attempt_prefix_only_in_ivr_mode(app_module, fake_model):
     fake_model.reset()
     final = drive(app_module, adapters=("uncertainty",))[-1]
     assert not any("(Attempt" in t for t in assistant_texts(final))
+
+
+def test_identical_attempt_reuses_verdict_and_retries(app_module, fake_model):
+    """A draft identical to an already-failed one is not re-judged — with KV
+    reuse, bf16 prefill noise can flip a borderline verdict on the exact same
+    text (identical answers scored fail then pass on the Space). The loop
+    notes the repeat and moves on to the next attempt."""
+    fake_model.script_judge("requirement-check", ['{"score": "no"}'])
+    final = drive(app_module, adapters=("requirement-check",),
+                  rules="Impossible requirement.", loop_budget=3)[-1]
+    texts = assistant_texts(final)
+    # all three drafts are identical -> only the first is judged
+    assert len(fake_model.calls_for("requirement-check")) == 1
+    attempts = [t for t in texts if fake_model.base_answer in t]
+    assert len(attempts) == 3, texts
+    repeats = [t for t in texts if "identical attempt — retrying" in t]
+    assert len(repeats) == 2, texts
+    # repeats follow their attempts; the exhaustion note still lands
+    assert texts.index(repeats[0]) == texts.index(attempts[1]) + 1
+    assert any("budget exhausted" in t.lower() for t in texts)
 
 
 def test_ivr_requires_rules(app_module, fake_model):
@@ -364,6 +389,9 @@ def test_kv_judge_reuses_draft_prefix(app_module, fake_model):
 
 
 def test_kv_second_attempt_reuses_prompt_prefix(app_module, fake_model):
+    fake_model.script_drafts(
+        [f"{fake_model.base_answer} (v1)", f"{fake_model.base_answer} (v2)"]
+    )
     fake_model.script_judge("requirement-check", ['{"score": "no"}', '{"score": "yes"}'])
     drive(app_module, adapters=("requirement-check",), rules="Must mention rock.")
     kinds = [c[0] for c in fake_model.cache_calls]

@@ -58,16 +58,21 @@ class FakeSwitchModel:
         self.calls = []  # (adapter_name | None, input id list, generate kwargs)
         self.cache_calls = []  # (adapter_name | None, cache_len_in | None, ids)
         self.judge_answers = {}  # adapter name -> deque of scripted raw outputs
+        self.draft_answers = deque()  # scripted plain-generation outputs
         self.base_answer = "The moon is made of anorthosite rock."
 
     # ------------------------------------------------------------- scripting
     def script_judge(self, adapter, answers):
         self.judge_answers[adapter] = deque(answers)
 
+    def script_drafts(self, answers):
+        self.draft_answers = deque(answers)
+
     def reset(self):
         self.calls = []
         self.cache_calls = []
         self.judge_answers = {}
+        self.draft_answers = deque()
         self.base_answer = "The moon is made of anorthosite rock."
 
     def calls_for(self, adapter):
@@ -115,6 +120,8 @@ class FakeSwitchModel:
         if adapter is not None:
             script = self.judge_answers.get(adapter)
             text = script.popleft() if script else DEFAULT_JUDGE_ANSWERS[adapter]
+        elif self.draft_answers:
+            text = self.draft_answers.popleft()
         else:
             text = self.base_answer
         new = self._tokenizer(text, add_special_tokens=False, return_tensors="pt").input_ids
