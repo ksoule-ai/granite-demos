@@ -134,7 +134,9 @@ def test_guardian_verdict(app_module, fake_model):
     fake_model.script_judge("guardian-core", ['{"score": "yes"}'])
     final = drive(app_module, adapters=("guardian-core",))[-1]
     verdict = assistant_texts(final)[-1]
-    assert "guardian-core" in verdict and "risk detected" in verdict
+    # bare verdict: JSON + reading, no "guardian-core (harm) →" prefix
+    assert '"guardian"' in verdict and "risk detected" in verdict
+    assert not verdict.replace('<span class="meta-note">', "").startswith("guardian-core")
     assert CONTROL_TOKENS["guardian-core"] in fake_model.calls_for("guardian-core")[0][1]
 
 
@@ -142,19 +144,27 @@ def test_multiple_judges_get_their_own_bubbles(app_module, fake_model):
     final = drive(app_module, adapters=("uncertainty", "guardian-core"))[-1]
     verdicts = [
         t for t in assistant_texts(final)
-        if t.startswith("uncertainty →") or t.startswith("guardian-core")
+        if '"certainty"' in t or '"guardian"' in t
     ]
     assert len(verdicts) == 2, assistant_texts(final)
-    assert verdicts[0].startswith("uncertainty →")
-    assert verdicts[1].startswith("guardian-core")
+    assert '"certainty"' in verdicts[0]
+    assert '"guardian"' in verdicts[1]
     judged = [adapter for adapter, _, _ in fake_model.calls if adapter]
     assert judged == ["uncertainty", "guardian-core"]
 
 
-def test_no_html_styling_in_bubbles(app_module, fake_model):
-    """Bubbles are plain markdown — no span wrappers / custom colors."""
-    final = drive(app_module, adapters=("uncertainty", "guardian-core"))[-1]
-    assert not any("<span" in t for t in assistant_texts(final))
+def test_meta_messages_purple_drafts_plain(app_module, fake_model):
+    """Every non-draft assistant message carries the meta-note marker (light
+    purple + italics via CSS); draft/answer bubbles stay plain markdown."""
+    fake_model.script_judge("requirement-check", ['{"score": "yes"}'])
+    final = drive(app_module, adapters=("requirement-check", "uncertainty"),
+                  rules="Anything.")[-1]
+    texts = assistant_texts(final)
+    drafts = [t for t in texts if fake_model.base_answer in t]
+    metas = [t for t in texts if fake_model.base_answer not in t]
+    assert drafts and metas, texts
+    assert all("meta-note" not in t for t in drafts), drafts
+    assert all(t.startswith('<span class="meta-note">') for t in metas), metas
 
 
 def test_draft_streams_cumulatively_into_one_bubble(app_module, fake_model):
@@ -188,9 +198,9 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     texts = assistant_texts(final)
     attempts = [t for t in texts if fake_model.base_answer in t]
     assert len(attempts) == 2, texts
-    # drafts carry only the attempt label; each checker verdict is its own bubble
-    assert attempts[0] == f"(Attempt 1)\n\n{fake_model.base_answer}"
-    assert attempts[1] == f"(Attempt 2)\n\n{fake_model.base_answer}"
+    # drafts carry only the italic attempt label; each checker verdict is its own bubble
+    assert attempts[0] == f"*(Attempt 1)*\n\n{fake_model.base_answer}"
+    assert attempts[1] == f"*(Attempt 2)*\n\n{fake_model.base_answer}"
     checks = [t for t in texts if "requirement-check →" in t]
     assert len(checks) == 2, texts
     assert "❌" in checks[0] and "✅" in checks[1]
@@ -227,7 +237,7 @@ def test_attempt_prefix_only_in_ivr_mode(app_module, fake_model):
     prefix is display-only (the judge prompt sees the clean draft), and it is
     present while the draft is still streaming."""
     states = drive(app_module, adapters=("requirement-check",), rules="Anything.")
-    streamed = [t for s in states for t in assistant_texts(s) if t.startswith("(Attempt 1)")]
+    streamed = [t for s in states for t in assistant_texts(s) if t.startswith("*(Attempt 1)*")]
     assert streamed, "no prefixed draft states observed"
     assert any(t != streamed[-1] for t in streamed), "prefix missing during streaming"
     tok = app_module.tokenizer

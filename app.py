@@ -78,11 +78,17 @@ def _content_text(content):
 
 
 # ------------------------------------------------------------------ rendering
-# Transient progress notes render as italic markdown with a ⏳ marker; they
-# are replaced by the next real event and must never survive in the final
-# history (see bot_respond).
+# Everything that is not a user message or a generation attempt — progress
+# notes, checker verdicts, the IVR outcome, judge verdicts — is a "meta"
+# message: light purple background, italic text (see the CSS, which targets
+# the marker span). Meta content is plain text, not markdown: markdown does
+# not render inside raw HTML spans.
+def meta_display(text):
+    return f'<span class="meta-note">{text}</span>'
+
+
 def status_display(text):
-    return f"⏳ *{text}*"
+    return meta_display(f"⏳ {text}")
 
 
 ATTEMPT_NOTE = {True: "✅ requirement satisfied", False: "❌ requirement not satisfied"}
@@ -227,7 +233,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             yield (
                 "verdict",
                 "uncertainty",
-                f'uncertainty → `{{"certainty": {certainty:.2f}}}` — '
+                f'{{"certainty": {certainty:.2f}}} — '
                 f"the model is {verdict} in this answer.",
             )
         elif adapter == "guardian-core":
@@ -237,7 +243,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             yield (
                 "verdict",
                 "guardian-core",
-                f'guardian-core (harm) → `{{"guardian": {{"score": {risk:.2f}}}}}` — {verdict}.',
+                f'{{"guardian": {{"score": {risk:.2f}}}}} — {verdict}.',
             )
 
 
@@ -277,7 +283,7 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
     def draft_display(i, text):
         # Display-only: the judge and the generation context see the clean
         # draft, without the attempt label.
-        return f"(Attempt {i})\n\n{text}" if use_ivr else text
+        return f"*(Attempt {i})*\n\n{text}" if use_ivr else text
 
     for event in run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget):
         kind = event[0]
@@ -306,8 +312,10 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
             _, i, passed, verdicts = event
             note = f"attempt {i}: {ATTEMPT_NOTE[passed]}"
             if verdicts:
-                note += f" — requirement-check → `{verdicts}`"
-            history = drop_status(history) + [{"role": "assistant", "content": note}]
+                note += f" — requirement-check → {verdicts}"
+            history = drop_status(history) + [
+                {"role": "assistant", "content": meta_display(note)}
+            ]
             status_pending = False
         elif kind == "final":
             _, index, success, attempts = event
@@ -316,11 +324,15 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 if success
                 else f"⚠️ Attempt budget exhausted after {attempts} tries; showing attempt {index + 1}."
             )
-            history = drop_status(history) + [{"role": "assistant", "content": note}]
+            history = drop_status(history) + [
+                {"role": "assistant", "content": meta_display(note)}
+            ]
             status_pending = False
         elif kind == "verdict":
             text = event[2]
-            history = drop_status(history) + [{"role": "assistant", "content": text}]
+            history = drop_status(history) + [
+                {"role": "assistant", "content": meta_display(text)}
+            ]
             status_pending = False
         yield history
     if status_pending:
@@ -339,6 +351,23 @@ def update_visibility(adapter_choices):
     show_rules = "requirement-check" in selected
     return gr.update(visible=show_rules), gr.update(visible=show_rules)
 
+
+CSS = """
+/* Meta messages (anything that is not a user message or a generation
+   attempt): light purple bubble, italic text. The whole bubble is tinted;
+   inner elements stay transparent so text never shows its own patch. */
+.message:has(.meta-note) {
+    background-color: #ede9fe !important;
+    border-color: #ddd6fe !important;
+    color: #1f2937 !important;
+}
+.meta-note,
+.message:has(.meta-note) * {
+    background: transparent !important;
+    color: inherit !important;
+    font-style: italic;
+}
+"""
 
 with gr.Blocks(title="Granite Switch 4.1 8B Demo") as demo:
     gr.Markdown(
@@ -446,4 +475,4 @@ greedy; only the drafts use your temperature.
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(css=CSS)
