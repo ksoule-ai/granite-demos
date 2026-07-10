@@ -148,6 +148,23 @@ def test_multiple_judges_run_in_selection_order(app_module, fake_model):
     assert judged == ["uncertainty", "guardian-core"]
 
 
+def test_draft_streams_cumulatively_into_one_bubble(app_module, fake_model):
+    """Draft tokens stream into a single assistant bubble: successive states
+    grow the same bubble (each a prefix of the next), and the final state has
+    exactly one answer bubble, not one per streamed chunk."""
+    states = drive(app_module, adapters=("uncertainty",))
+    versions = []
+    for state in states:
+        texts = [t for t in assistant_texts(state) if "adapter-" not in t]
+        if texts:
+            versions.append(texts[0])
+        assert len(texts) <= 1, "streaming must update one bubble, not append"
+    assert len(versions) > 1, "no streamed intermediate states observed"
+    for prev, cur in zip(versions, versions[1:]):
+        assert cur.startswith(prev), "stream must be cumulative"
+    assert versions[-1] == fake_model.base_answer
+
+
 def test_no_status_bubbles_left_behind(app_module, fake_model):
     final = drive(app_module, adapters=("uncertainty", "guardian-core"))[-1]
     assert not any('adapter-prompt' in t for t in assistant_texts(final))

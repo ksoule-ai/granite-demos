@@ -1,4 +1,7 @@
+import asyncio
 import html
+import queue
+from threading import Thread
 
 import spaces
 import gradio as gr
@@ -10,8 +13,9 @@ MODEL_ID = "ibm-granite/granite-switch-4.1-8b-preview"
 # Must import before AutoModelForCausalLM to register GraniteSwitchForCausalLM
 import granite_switch.hf  # noqa: F401, E402
 
-from mellea import MelleaSession
+from mellea.backends.model_options import ModelOption
 from mellea.stdlib.context import ChatContext
+from mellea.stdlib.components.instruction import Instruction
 from mellea.stdlib.components.intrinsic import core as core_intrinsics
 from mellea.stdlib.components.intrinsic import guardian as guardian_intrinsics
 from mellea.stdlib import functional as mfuncs
@@ -89,6 +93,54 @@ ATTEMPT_NOTE = {True: "✅ requirement satisfied", False: "❌ requirement not s
 
 
 # ---------------------------------------------------------------- generation
+def _stream_draft(prompt, requirements, gen_options):
+    """Generate one draft with token streaming.
+
+    mellea's streaming is async-only (ModelOption.STREAM +
+    ModelOutputThunk.astream()), while this app yields UI events from a sync
+    generator. Bridge: run the async generation on a private event loop in a
+    worker thread and hand text out through a queue. Yields
+    ("partial", accumulated_text) as tokens arrive, then
+    ("done", text, ctx) where ctx is the generation context (task + draft),
+    ready for live-context validation and judging.
+
+    Judge turns cannot stream — mellea's intrinsics raise NotImplementedError
+    on STREAM because the io.yaml result processor needs the complete
+    constrained JSON (and its logprobs) — so only drafts come through here.
+    """
+    out = queue.Queue()
+
+    async def produce():
+        action = Instruction(description=prompt, requirements=requirements or [])
+        opts = dict(gen_options)
+        opts[ModelOption.STREAM] = True
+        mot, gen_ctx = await backend.generate_from_context(
+            action, ChatContext(), model_options=opts
+        )
+        text = ""
+        while not mot.is_computed():
+            delta = await mot.astream()
+            if delta:
+                text += delta
+                out.put(("partial", text))
+        out.put(("done", text, gen_ctx))
+
+    def run():
+        try:
+            asyncio.run(produce())
+        except Exception as e:  # surface errors in the consuming thread
+            out.put(("error", e))
+
+    Thread(target=run, daemon=True).start()
+    while True:
+        item = out.get()
+        if item[0] == "error":
+            raise item[1]
+        yield item
+        if item[0] == "done":
+            return
+
+
 @spaces.GPU(duration=300)
 def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget):
     """One interaction on one GPU slot, driven end-to-end by Mellea.
@@ -100,7 +152,9 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
     then judges the final answer via its Mellea intrinsic. Yields events:
 
       ("status", text)                          — progress notes for the UI
-      ("attempt", i, text, passed|None[, json]) — a generation attempt (passed
+      ("partial", i, text)                      — attempt i's draft so far
+                                                  (accumulated, token-streamed)
+      ("attempt", i, text, passed|None[, json]) — a finished attempt (passed
                                                   is None outside the IVR loop;
                                                   json is the checker's verdict)
       ("final", index, success, attempts)       — which attempt was selected
@@ -134,20 +188,19 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
         attempts = []
         success = False
         for i in range(1, budget + 1):
-            m = MelleaSession(backend, ctx=ChatContext())  # independent resample
-            output = m.instruct(
-                prompt,
-                requirements=[requirement],
-                strategy=None,
-                model_options=gen_options,
-            )
-            validations = mfuncs.validate([requirement], m.ctx, backend)
+            draft_text, draft_ctx = "", None
+            for item in _stream_draft(prompt, [requirement], gen_options):
+                if item[0] == "partial":
+                    yield ("partial", i, item[1])
+                else:  # independent resample per attempt: fresh ctx each time
+                    _, draft_text, draft_ctx = item
+            validations = mfuncs.validate([requirement], draft_ctx, backend)
             passed = all(bool(v) for v in validations)
             # For aLoRA validation, reason is the adapter's parsed JSON
             # verdict (e.g. {"requirement_check": {"score": 0.97}}).
             verdicts = " ".join(v.reason for v in validations if v.reason)
-            attempts.append((str(output), m.ctx))
-            yield ("attempt", i, str(output), passed, verdicts)
+            attempts.append((draft_text, draft_ctx))
+            yield ("attempt", i, draft_text, passed, verdicts)
             if passed:
                 success = True
                 break
@@ -158,10 +211,13 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
         yield ("final", chosen, success, len(attempts))
     else:
         yield ("status", "Generating…")
-        m = MelleaSession(backend, ctx=ChatContext())
-        output = m.instruct(prompt, strategy=None, model_options=gen_options)
-        final_ctx = m.ctx
-        yield ("attempt", 1, str(output), None)
+        draft_text, final_ctx = "", None
+        for item in _stream_draft(prompt, [], gen_options):
+            if item[0] == "partial":
+                yield ("partial", 1, item[1])
+            else:
+                _, draft_text, final_ctx = item
+        yield ("attempt", 1, draft_text, None)
 
     for adapter in adapters:
         # Verdict bubbles show the JSON mellea parses out of the adapter's
@@ -215,6 +271,7 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
 
     prompt = _content_text(history[-1]["content"])
     status_pending = False
+    partial_open = False  # the last bubble is a draft still streaming in
 
     def drop_status(h):
         return h[:-1] if status_pending else h
@@ -226,6 +283,14 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 {"role": "assistant", "content": status_display(event[1])}
             ]
             status_pending = True
+        elif kind == "partial":
+            text = event[2]
+            if partial_open:
+                history = history[:-1] + [{"role": "assistant", "content": text}]
+            else:
+                history = drop_status(history) + [{"role": "assistant", "content": text}]
+                status_pending = False
+                partial_open = True
         elif kind == "attempt":
             _, i, text, passed, verdicts = (*event, "")[:5]
             if passed is not None:
@@ -233,7 +298,11 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 if verdicts:
                     note += f" — requirement-check → `{verdicts}`"
                 text = f"{text}\n\n*{note}*"
-            history = drop_status(history) + [{"role": "assistant", "content": text}]
+            if partial_open:  # finalize the streaming bubble in place
+                history = history[:-1] + [{"role": "assistant", "content": text}]
+                partial_open = False
+            else:
+                history = drop_status(history) + [{"role": "assistant", "content": text}]
             status_pending = False
         elif kind == "final":
             _, index, success, attempts = event

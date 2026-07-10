@@ -101,6 +101,13 @@ class FakeSwitchModel:
         new = torch.cat([new, torch.tensor([[self._tokenizer.eos_token_id]])], dim=1)
         sequences = torch.cat([input_ids, new], dim=1)
 
+        streamer = kwargs.get("streamer")
+        if streamer is not None:  # mellea streaming path (AsyncTextIteratorStreamer)
+            streamer.put(input_ids[0])  # prompt — skipped via skip_prompt=True
+            for token in new[0]:
+                streamer.put(token.unsqueeze(0))
+            streamer.end()
+
         scores = None
         if kwargs.get("output_scores"):
             scores = tuple(
