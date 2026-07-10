@@ -188,8 +188,9 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     texts = assistant_texts(final)
     attempts = [t for t in texts if fake_model.base_answer in t]
     assert len(attempts) == 2, texts
-    # drafts are clean bubbles; each checker verdict is its own bubble
-    assert all(t == fake_model.base_answer for t in attempts)
+    # drafts carry only the attempt label; each checker verdict is its own bubble
+    assert attempts[0] == f"(Attempt 1)\n\n{fake_model.base_answer}"
+    assert attempts[1] == f"(Attempt 2)\n\n{fake_model.base_answer}"
     checks = [t for t in texts if "requirement-check →" in t]
     assert len(checks) == 2, texts
     assert "❌" in checks[0] and "✅" in checks[1]
@@ -219,6 +220,22 @@ def test_ivr_reports_budget_exhaustion(app_module, fake_model):
     texts = assistant_texts(final)
     assert any("budget exhausted" in t.lower() for t in texts), texts
     assert len(fake_model.calls_for("requirement-check")) == 3
+
+
+def test_attempt_prefix_only_in_ivr_mode(app_module, fake_model):
+    """Drafts show '(Attempt X)' only when the requirement checker runs; the
+    prefix is display-only (the judge prompt sees the clean draft), and it is
+    present while the draft is still streaming."""
+    states = drive(app_module, adapters=("requirement-check",), rules="Anything.")
+    streamed = [t for s in states for t in assistant_texts(s) if t.startswith("(Attempt 1)")]
+    assert streamed, "no prefixed draft states observed"
+    assert any(t != streamed[-1] for t in streamed), "prefix missing during streaming"
+    tok = app_module.tokenizer
+    judge_prompt = tok.decode(fake_model.calls_for("requirement-check")[0][1])
+    assert "(Attempt" not in judge_prompt
+    fake_model.reset()
+    final = drive(app_module, adapters=("uncertainty",))[-1]
+    assert not any("(Attempt" in t for t in assistant_texts(final))
 
 
 def test_ivr_requires_rules(app_module, fake_model):

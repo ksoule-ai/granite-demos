@@ -269,9 +269,15 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
     prompt = _content_text(history[-1]["content"])
     status_pending = False
     partial_open = False  # the last bubble is a draft still streaming in
+    use_ivr = "requirement-check" in adapters and bool(rules.strip())
 
     def drop_status(h):
         return h[:-1] if status_pending else h
+
+    def draft_display(i, text):
+        # Display-only: the judge and the generation context see the clean
+        # draft, without the attempt label.
+        return f"(Attempt {i})\n\n{text}" if use_ivr else text
 
     for event in run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget):
         kind = event[0]
@@ -281,7 +287,7 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
             ]
             status_pending = True
         elif kind == "partial":
-            text = event[2]
+            text = draft_display(event[1], event[2])
             if partial_open:
                 history = history[:-1] + [{"role": "assistant", "content": text}]
             else:
@@ -289,7 +295,7 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 status_pending = False
                 partial_open = True
         elif kind == "attempt":
-            text = event[2]
+            text = draft_display(event[1], event[2])
             if partial_open:  # finalize the streaming bubble in place
                 history = history[:-1] + [{"role": "assistant", "content": text}]
                 partial_open = False
