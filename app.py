@@ -99,11 +99,12 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
     Otherwise a single plain generation runs. Each remaining selected adapter
     then judges the final answer via its Mellea intrinsic. Yields events:
 
-      ("status", text)                      — progress notes for the UI
-      ("attempt", i, text, passed|None)     — a generation attempt (passed is
-                                              None outside the IVR loop)
-      ("final", index, success, attempts)   — which attempt was selected
-      ("verdict", adapter, text)            — a judge adapter's verdict
+      ("status", text)                          — progress notes for the UI
+      ("attempt", i, text, passed|None[, json]) — a generation attempt (passed
+                                                  is None outside the IVR loop;
+                                                  json is the checker's verdict)
+      ("final", index, success, attempts)       — which attempt was selected
+      ("verdict", adapter, text)                — a judge adapter's verdict
     """
     gen_options = {"max_new_tokens": int(max_new_tokens)}
     if temperature > 0:
@@ -132,7 +133,10 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             zip(result.sample_generations, result.sample_validations), start=1
         ):
             passed = all(bool(v) for _, v in validations)
-            yield ("attempt", i, str(gen), passed)
+            # For aLoRA validation, reason is the adapter's parsed JSON
+            # verdict (e.g. {"requirement_check": {"score": 0.97}}).
+            verdicts = " ".join(v.reason for _, v in validations if v.reason)
+            yield ("attempt", i, str(gen), passed, verdicts)
         yield (
             "final",
             result.result_index,
@@ -145,6 +149,9 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
         yield ("attempt", 1, str(output), None)
 
     for adapter in adapters:
+        # Verdict bubbles show the JSON mellea parses out of the adapter's
+        # constrained {"score": ...} output (io.yaml maps it to a calibrated
+        # 0-1 value), followed by a plain-English reading.
         if adapter == "uncertainty":
             yield ("status", "uncertainty aLoRA is scoring the answer…")
             certainty = core_intrinsics.check_certainty(m.ctx, backend)
@@ -152,7 +159,8 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             yield (
                 "verdict",
                 "uncertainty",
-                f"uncertainty → certainty {certainty:.2f}: the model is {verdict} in this answer.",
+                f'uncertainty → {{"certainty": {certainty:.2f}}} — '
+                f"the model is {verdict} in this answer.",
             )
         elif adapter == "guardian-core":
             yield ("status", "guardian-core aLoRA is screening the answer…")
@@ -161,7 +169,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             yield (
                 "verdict",
                 "guardian-core",
-                f"guardian-core → harm risk {risk:.2f}: {verdict}.",
+                f'guardian-core (harm) → {{"guardian": {{"score": {risk:.2f}}}}} — {verdict}.',
             )
 
 
@@ -204,9 +212,12 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
             ]
             status_pending = True
         elif kind == "attempt":
-            _, i, text, passed = event
+            _, i, text, passed, verdicts = (*event, "")[:5]
             if passed is not None:
-                text = f"{text}\n\n*attempt {i}: {ATTEMPT_NOTE[passed]}*"
+                note = f"attempt {i}: {ATTEMPT_NOTE[passed]}"
+                if verdicts:
+                    note += f" — requirement-check → `{verdicts}`"
+                text = f"{text}\n\n*{note}*"
             history = drop_status(history) + [{"role": "assistant", "content": text}]
             status_pending = False
         elif kind == "final":

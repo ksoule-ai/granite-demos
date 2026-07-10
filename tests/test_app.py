@@ -123,7 +123,8 @@ def test_judge_adapter_activates_and_reports(app_module, fake_model):
     texts = assistant_texts(final)
     assert fake_model.base_answer in texts[0]
     assert 'class="adapter-response"' in texts[-1]
-    assert "0.85" in texts[-1]
+    # the verdict bubble carries the parsed JSON, not just prose
+    assert '{&quot;certainty&quot;: 0.85}' in texts[-1] or '{"certainty": 0.85}' in texts[-1]
     # the uncertainty control token reached the model exactly once
     assert len(fake_model.calls_for("uncertainty")) == 1
     ids = fake_model.calls_for("uncertainty")[0][1]
@@ -162,6 +163,8 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     attempts = [t for t in texts if fake_model.base_answer in t]
     assert len(attempts) == 2, texts
     assert "❌" in attempts[0] and "✅" in attempts[1]
+    # each attempt note carries the checker's JSON verdict
+    assert all("requirement_check" in t for t in attempts), attempts
     assert any("converged on attempt 2 of 2" in t for t in texts)
     # the requirement-check aLoRA judged each attempt
     assert len(fake_model.calls_for("requirement-check")) == 2
