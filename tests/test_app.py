@@ -342,7 +342,7 @@ def test_judge_max_tokens_come_from_io_yaml(app_module, fake_model):
 
 # ------------------------------------------------------------------ KV cache
 
-KV_NOTE_RE = re.compile(r"⚡ `?KV cache: (\d+)/(\d+) prompt tokens reused \((\d+)% hit\)`?")
+KV_NOTE_RE = re.compile(r"⚡ (?:`|<code>)?KV cache: (\d+)/(\d+) prompt tokens reused \((\d+)% hit\)")
 
 
 def _prefix_len(a, b):
@@ -384,7 +384,7 @@ def test_kv_judge_reuses_draft_prefix(app_module, fake_model):
     ))
     assert cache_len == expected > 0
     bubble = next(t for t in assistant_texts(final) if '"certainty"' in t)
-    assert f"<br>⚡ KV cache: {expected}/{len(judge_ids)}" in bubble
+    assert f"<br>⚡ <code>KV cache: {expected}/{len(judge_ids)}" in bubble
     assert "`" not in bubble  # no markdown inside meta spans
 
 
@@ -447,7 +447,7 @@ def test_kv_math_failure_falls_back(app_module, fake_model, monkeypatch):
     judge = next(c for c in fake_model.cache_calls if c[0] == "uncertainty")
     assert judge[1] is None
     bubble = next(t for t in assistant_texts(final) if '"certainty"' in t)
-    assert f"⚡ KV cache: 0/{len(judge[2])}" in bubble
+    assert f"⚡ <code>KV cache: 0/{len(judge[2])}" in bubble
 
 
 def test_kv_resets_between_interactions(app_module, fake_model):
@@ -462,5 +462,7 @@ def test_final_note_inserted_before_kv_footnote(app_module, fake_model):
     fake_model.script_judge("requirement-check", ['{"score": "yes"}'])
     final = drive(app_module, adapters=("requirement-check",), rules="Anything.")[-1]
     check = next(t for t in assistant_texts(final) if "requirement_check" in t)
-    assert check.index("converged") < check.index("⚡ KV cache"), check
+    assert check.index("converged") < check.index("⚡ <code>KV cache"), check
+    # the outcome line is bold, not italic
+    assert "<strong>✅ IVR loop converged" in check, check
     assert check.endswith("</span>")

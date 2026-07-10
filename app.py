@@ -97,7 +97,7 @@ ATTEMPT_NOTE = {True: "✅ requirement satisfied", False: "❌ requirement not s
 # Every generation's KV-cache reuse is reported under the bubble it produced.
 # KV_META_MARKER must stay the exact prefix kv_note_meta() emits: the "final"
 # outcome note is spliced in front of it.
-KV_META_MARKER = "<br>⚡ KV cache: "
+KV_META_MARKER = "<br>⚡ <code>KV cache: "
 
 
 def _kv_text(kv):
@@ -112,8 +112,9 @@ def kv_note_md(kv):
 
 
 def kv_note_meta(kv):
-    """Plain-text form for meta-note spans (markdown doesn't render there)."""
-    return f"<br>⚡ {_kv_text(kv)}" if kv else ""
+    """Meta-note-span form: <code>, not backticks (markdown doesn't render
+    inside raw HTML) — styled by CSS to match the draft bubbles' inline code."""
+    return f"<br>⚡ <code>{_kv_text(kv)}</code>" if kv else ""
 
 
 # ---------------------------------------------------------------- generation
@@ -395,6 +396,9 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 else f"⚠️ Attempt budget exhausted after {attempts} tries; will revert "
                      f"to attempt {index + 1} for the rest of the conversation."
             )
+            # Bold, non-italic (CSS overrides the meta span's italics for
+            # <strong>).
+            note = f"<strong>{note}</strong>"
             last = history[-1]["content"]
             if last.startswith('<span class="meta-note">'):
                 # Join the outcome onto the requirement-check score bubble,
@@ -450,6 +454,19 @@ CSS = """
     background: transparent !important;
     color: inherit !important;
     font-style: italic;
+}
+/* the IVR outcome line: bold, not italic */
+.message:has(.meta-note) strong {
+    font-style: normal;
+    font-weight: 700;
+}
+/* KV notes inside meta bubbles match the drafts' inline-code look */
+.message:has(.meta-note) code {
+    background: rgba(0, 0, 0, 0.07) !important;
+    font-style: normal;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    padding: 0 4px;
+    border-radius: 4px;
 }
 """
 
@@ -507,13 +524,13 @@ greedy; only the drafts use your temperature.
             gr.Markdown("### Switch Configuration")
             adapter_dropdown = gr.Dropdown(
                 choices=ADAPTER_CHOICES,
-                value=["requirement-check"],
+                value=list(ADAPTER_CHOICES),
                 multiselect=True,
                 label="Adapters",
                 info="requirement-check steers generation (IVR); the others judge the result.",
             )
             adapter_desc = gr.Markdown(
-                value=get_adapter_description(["requirement-check"]),
+                value=get_adapter_description(ADAPTER_CHOICES),
                 label="",
             )
             rules_box = gr.Textbox(
