@@ -62,6 +62,18 @@ ADAPTER_DESCRIPTIONS = {
 JUDGE_ADAPTERS = ["uncertainty", "guardian-core"]
 
 
+def _content_text(content):
+    # Gradio 6 round-trips Chatbot message content as a list of blocks;
+    # mellea's instruct() needs the plain string.
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
+        )
+    return str(content)
+
+
 # ------------------------------------------------------------------ rendering
 # Adapter/verdict bubbles are tinted purple: their content is wrapped in a
 # marker span the CSS targets via :has(). The wrappers are UI-only.
@@ -178,7 +190,7 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
         adapter_choices = [adapter_choices]
     adapters = list(adapter_choices or [])
 
-    prompt = history[-1]["content"]
+    prompt = _content_text(history[-1]["content"])
     status_pending = False
 
     def drop_status(h):

@@ -98,6 +98,16 @@ def assistant_texts(state):
     return [m["content"] for m in state if m["role"] == "assistant"]
 
 
+def test_block_format_user_content(app_module, fake_model):
+    """Gradio 6 round-trips Chatbot content as a list of blocks — the prompt
+    must be flattened to a plain string before it reaches mellea (regression
+    for the 'Exception: Type Error' from blockify on the Space)."""
+    history = [{"role": "user", "content": [{"type": "text", "text": "Tell me about basalt."}]}]
+    states = list(app_module.bot_respond(history, ["uncertainty"], "", 64, 0.0, 3))
+    assert states, "no states yielded"
+    assert fake_model.base_answer in assistant_texts(states[-1])[0]
+
+
 # ------------------------------------------------------------- plain + judges
 
 def test_plain_generation_has_no_control_token(app_module, fake_model):
