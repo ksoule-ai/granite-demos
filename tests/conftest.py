@@ -56,6 +56,7 @@ class FakeSwitchModel:
     def __init__(self, tokenizer):
         self._tokenizer = tokenizer
         self.calls = []  # (adapter_name | None, input id list, generate kwargs)
+        self.cache_calls = []  # (adapter_name | None, cache_len_in | None, ids)
         self.judge_answers = {}  # adapter name -> deque of scripted raw outputs
         self.base_answer = "The moon is made of anorthosite rock."
 
@@ -65,6 +66,7 @@ class FakeSwitchModel:
 
     def reset(self):
         self.calls = []
+        self.cache_calls = []
         self.judge_answers = {}
         self.base_answer = "The moon is made of anorthosite rock."
 
@@ -92,6 +94,24 @@ class FakeSwitchModel:
         adapter = next((_ID_TO_ADAPTER[t] for t in ids if t in _ID_TO_ADAPTER), None)
         self.calls.append((adapter, ids, dict(kwargs)))
 
+        # KV-cache contract of transformers 5.9 generate: with a cache, the
+        # prompt must exceed the cached length, and prefix trimming only
+        # happens when an attention_mask of the SAME length as input_ids is
+        # present. Encode those preconditions as hard asserts so the backend
+        # injection is verified on every call.
+        past = kwargs.get("past_key_values")
+        if past is not None:
+            assert past.get_seq_length() < input_ids.shape[1], (
+                "cache must be shorter than the prompt"
+            )
+            mask = kwargs.get("attention_mask")
+            assert mask is not None and mask.shape == input_ids.shape, (
+                "past_key_values requires a full-length attention_mask"
+            )
+        self.cache_calls.append(
+            (adapter, past.get_seq_length() if past is not None else None, ids)
+        )
+
         if adapter is not None:
             script = self.judge_answers.get(adapter)
             text = script.popleft() if script else DEFAULT_JUDGE_ANSWERS[adapter]
@@ -100,6 +120,16 @@ class FakeSwitchModel:
         new = self._tokenizer(text, add_special_tokens=False, return_tensors="pt").input_ids
         new = torch.cat([new, torch.tensor([[self._tokenizer.eos_token_id]])], dim=1)
         sequences = torch.cat([input_ids, new], dim=1)
+
+        if past is not None:
+            # Mimic generate's cache mutation: KV exists for every processed
+            # position, i.e. everything except the last generated token
+            # (never fed forward). Uniform (1, 1, seq, 1) shapes keep the
+            # backend's later crop() calls working.
+            grow = (sequences.shape[1] - 1) - past.get_seq_length()
+            if grow > 0:
+                kv = torch.zeros(1, 1, grow, 1)
+                past.update(kv, kv, 0)
 
         streamer = kwargs.get("streamer")
         if streamer is not None:  # mellea streaming path (AsyncTextIteratorStreamer)

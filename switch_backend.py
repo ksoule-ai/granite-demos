@@ -28,8 +28,11 @@ upstream intends to support embedded adapters on the HF backend natively.
 """
 
 import contextvars
+import logging
 
 import torch
+from transformers import DynamicCache
+
 from mellea.backends.adapters import AdapterType
 from mellea.backends.adapters.adapter import (
     Adapter,
@@ -46,6 +49,16 @@ from mellea.backends.model_options import ModelOption
 _ACTIVE_EMBEDDED_ADAPTER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "active_embedded_adapter", default=None
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _common_prefix_len(a, b):
+    n = min(a.shape[-1], b.shape[-1])
+    if n == 0:
+        return 0
+    neq = (a[:n] != b[:n]).nonzero()
+    return int(neq[0]) if len(neq) else n
 
 
 class SwitchEmbeddedAdapter(EmbeddedIntrinsicAdapter, IntrinsicAdapter):
@@ -124,6 +137,12 @@ class SwitchBackend(LocalHFBackend):
         # declares it uses embedded adapters.
         self._uses_embedded_adapters = True
         self._adapter_source = self._hf_model_id
+        # Per-interaction KV prefix reuse (inert until begin_interaction()):
+        # the interaction's DynamicCache, the token ids its prefix was
+        # computed from, and the (hits, total) stats per generation.
+        self._kv_cache = None
+        self._kv_identity = None
+        self._kv_stats = []
 
     def register_embedded_adapters(self, intrinsic_name: str | None = None) -> list[str]:
         """Register all (or one of) the checkpoint's embedded adapters.
@@ -169,6 +188,152 @@ class SwitchBackend(LocalHFBackend):
             return
         return super().unload_adapter(adapter_qualified_name)
 
+    # ----------------------------------------------------- KV prefix reuse
+    # One Space interaction (one @spaces.GPU slot) shares a DynamicCache
+    # across its generations: judge/adapter turns reuse the KV of their
+    # common token prefix with the draft conversation, and retry attempts
+    # reuse the instruction prefill. Sound for Granite Switch's aLoRA
+    # adapters: KV before an activation token is base-weight KV, and two
+    # prompts using different adapters differ at their control tokens, so a
+    # common prefix can never extend past the first control token —
+    # adapter-weight KV is only ever reused by the same adapter judging an
+    # identical prefix.
+    def begin_interaction(self):
+        """Enable KV prefix reuse until end_interaction(); resets any state."""
+        self._kv_cache = DynamicCache()
+        self._kv_identity = None
+        self._kv_stats = []
+
+    def end_interaction(self):
+        """Drop the interaction cache (frees its GPU tensors)."""
+        self._kv_cache = None
+        self._kv_identity = None
+        self._kv_stats = []
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def pop_kv_stats(self):
+        """Drain and return the (hits, total_prompt_tokens) recorded since
+        the last pop, in generation order (generation is serialized)."""
+        stats, self._kv_stats = self._kv_stats, []
+        return stats
+
+    def _generate_with_kv_reuse(self, generate_func, args, kwargs):
+        """Call generate_func with the interaction cache's shared prefix.
+
+        Two call shapes reach here (both funneled through the adapter lock):
+        mellea's standard path (generate_func is model.generate, args[0] is
+        the full-prompt ids tensor) and the intrinsic path (generate_func is
+        granite's generate_with_transformers, args[2]["input_tokens"] is the
+        prompt; extra keys flow to model.generate). Injecting past_key_values
+        plus a FULL-length attention_mask makes generate trim the cached
+        prefix internally (transformers only trims when the mask length
+        matches input_ids).
+
+        hits are measured against _kv_identity — the token ids the cache's
+        contents were actually computed from — never against anything else:
+        after a judge runs, the cache holds the judge's tokens, and comparing
+        a new prompt to an older draft sequence could overstate the overlap
+        and reuse invalid KV. Judge prompts are re-tokenized renders while
+        draft identities hold generated ids, and BPE re-encode is not the
+        identity, so measured overlap may stop partway into the draft answer;
+        the stats report actual reused tokens.
+
+        Any failure in the cache math falls back to a cache-less call with
+        the pristine args. A failed generate itself is never retried: on the
+        streaming path the streamer has already emitted tokens to the UI.
+        """
+        call_args, call_kwargs = args, kwargs
+        prompt_ids = None
+        mode = None
+        injected = False
+        try:
+            if args and torch.is_tensor(args[0]):
+                mode = "standard"
+                prompt_ids = args[0]
+                usable = (
+                    prompt_ids.dim() == 2
+                    and prompt_ids.shape[0] == 1
+                    and kwargs.get("use_cache", True) is not False
+                    and kwargs.get("num_return_sequences") in (None, 1)
+                )
+            elif (
+                len(args) >= 3
+                and isinstance(args[2], dict)
+                and "input_tokens" in args[2]
+            ):
+                mode = "intrinsic"
+                prompt_ids = args[2]["input_tokens"]
+                usable = (
+                    torch.is_tensor(prompt_ids)
+                    and prompt_ids.dim() == 2
+                    and prompt_ids.shape[0] == 1
+                    and args[2].get("num_return_sequences") in (None, 1)
+                )
+            else:
+                usable = False
+
+            if usable:
+                total = int(prompt_ids.shape[1])
+                hits = 0
+                if self._kv_identity is not None:
+                    hits = max(0, min(
+                        _common_prefix_len(
+                            self._kv_identity.to(prompt_ids.device), prompt_ids[0]
+                        ),
+                        self._kv_cache.get_seq_length(),
+                        total - 1,  # generate needs at least one new token
+                    ))
+                if hits == 0:
+                    self._kv_cache = DynamicCache()
+                else:
+                    self._kv_cache.crop(hits)
+                mask = torch.ones_like(prompt_ids)
+                if mode == "standard":
+                    call_kwargs = {
+                        **kwargs,
+                        "past_key_values": self._kv_cache,
+                        "attention_mask": mask,
+                    }
+                else:
+                    generate_input = dict(args[2])
+                    generate_input["past_key_values"] = self._kv_cache
+                    generate_input["attention_mask"] = mask
+                    call_args = (*args[:2], generate_input, *args[3:])
+                injected = True
+                self._kv_stats.append((hits, total))
+            elif torch.is_tensor(prompt_ids) and prompt_ids.dim() == 2:
+                # Unusual call shape: run cache-less but still report it.
+                self._kv_stats.append((0, int(prompt_ids.shape[1])))
+        except Exception:
+            logger.warning(
+                "KV cache reuse disabled for this generation", exc_info=True
+            )
+            self._kv_cache = DynamicCache()
+            self._kv_identity = None
+            call_args, call_kwargs = args, kwargs
+            injected = False
+            if torch.is_tensor(prompt_ids) and prompt_ids.dim() == 2:
+                self._kv_stats.append((0, int(prompt_ids.shape[1])))
+
+        result = generate_func(*call_args, **call_kwargs)
+
+        if injected:
+            try:
+                if mode == "standard" and hasattr(result, "sequences"):
+                    # Full prompt + generated ids: exactly what the cache holds
+                    # (minus the last token generate never feeds forward).
+                    self._kv_identity = result.sequences[0].detach()
+                else:
+                    # generate_with_transformers returns a ChatCompletionResponse
+                    # (no sequences); the prompt is the reusable-identity part.
+                    self._kv_identity = prompt_ids[0].detach()
+            except Exception:
+                logger.warning("KV identity update failed; resetting cache", exc_info=True)
+                self._kv_cache = DynamicCache()
+                self._kv_identity = None
+        return result
+
     # ------------------------------------------------------------- generation
     def _has_peft_adapters(self):
         return any(
@@ -189,7 +354,9 @@ class SwitchBackend(LocalHFBackend):
             # ValueError the parent swallows). Keep the lock: the parent
             # serializes all generation through it.
             with self._generation_lock:
-                return generate_func(*args, **kwargs)
+                if self._kv_cache is None:  # no interaction in progress
+                    return generate_func(*args, **kwargs)
+                return self._generate_with_kv_reuse(generate_func, args, kwargs)
         return super()._generate_with_adapter_lock(
             adapter_name, generate_func, *args, **kwargs
         )

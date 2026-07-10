@@ -198,9 +198,11 @@ def test_ivr_retries_until_requirement_passes(app_module, fake_model):
     texts = assistant_texts(final)
     attempts = [t for t in texts if fake_model.base_answer in t]
     assert len(attempts) == 2, texts
-    # drafts carry only the italic attempt label; each checker verdict is its own bubble
-    assert attempts[0] == f"*(Attempt 1)*\n{fake_model.base_answer}"
-    assert attempts[1] == f"*(Attempt 2)*\n{fake_model.base_answer}"
+    # drafts carry the italic attempt label plus a KV note; each checker
+    # verdict is its own bubble
+    assert attempts[0].startswith(f"*(Attempt 1)*\n{fake_model.base_answer}")
+    assert attempts[1].startswith(f"*(Attempt 2)*\n{fake_model.base_answer}")
+    assert all(KV_NOTE_RE.search(t) for t in attempts)
     checks = [t for t in texts if "requirement_check" in t]
     assert len(checks) == 2, texts
     # format: {json} — ✅/❌ note
@@ -311,3 +313,126 @@ def test_judge_max_tokens_come_from_io_yaml(app_module, fake_model):
     drive(app_module, adapters=("uncertainty",), max_new_tokens=2048)
     kwargs = fake_model.calls_for("uncertainty")[0][2]
     assert kwargs.get("max_new_tokens") == 15  # io.yaml max_completion_tokens
+
+
+# ------------------------------------------------------------------ KV cache
+
+KV_NOTE_RE = re.compile(r"⚡ `?KV cache: (\d+)/(\d+) prompt tokens reused \((\d+)% hit\)`?")
+
+
+def _prefix_len(a, b):
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _draft_identity(app_module, fake_model, draft_ids):
+    """The token ids the backend records as the draft's cache identity:
+    prompt ids + generated answer ids + eos (FakeSwitchModel's sequences)."""
+    tok = app_module.tokenizer
+    answer = tok(fake_model.base_answer, add_special_tokens=False).input_ids
+    return list(draft_ids) + list(answer) + [tok.eos_token_id]
+
+
+def test_kv_cold_draft_reports_zero_hits(app_module, fake_model):
+    final = drive(app_module, adapters=("uncertainty",))[-1]
+    adapter, cache_len, ids = fake_model.cache_calls[0]
+    assert adapter is None and cache_len == 0
+    draft = assistant_texts(final)[0]
+    m = KV_NOTE_RE.search(draft)
+    assert m, draft
+    assert (int(m.group(1)), int(m.group(2)), m.group(3)) == (0, len(ids), "0")
+
+
+def test_kv_judge_reuses_draft_prefix(app_module, fake_model):
+    final = drive(app_module, adapters=("uncertainty",))[-1]
+    draft_ids = fake_model.cache_calls[0][2]
+    _, cache_len, judge_ids = next(
+        c for c in fake_model.cache_calls if c[0] == "uncertainty"
+    )
+    identity = _draft_identity(app_module, fake_model, draft_ids)
+    expected = max(0, min(
+        _prefix_len(identity, judge_ids), len(identity) - 1, len(judge_ids) - 1
+    ))
+    assert cache_len == expected > 0
+    bubble = next(t for t in assistant_texts(final) if '"certainty"' in t)
+    assert f"<br>⚡ KV cache: {expected}/{len(judge_ids)}" in bubble
+    assert "`" not in bubble  # no markdown inside meta spans
+
+
+def test_kv_second_attempt_reuses_prompt_prefix(app_module, fake_model):
+    fake_model.script_judge("requirement-check", ['{"score": "no"}', '{"score": "yes"}'])
+    drive(app_module, adapters=("requirement-check",), rules="Must mention rock.")
+    kinds = [c[0] for c in fake_model.cache_calls]
+    assert kinds == [None, "requirement-check", None, "requirement-check"]
+    # After a judge runs, the cache identity is the judge's INPUT ids; the
+    # next draft can reuse their shared instruction prefix.
+    judge1_ids = fake_model.cache_calls[1][2]
+    _, cache_len2, attempt2_ids = fake_model.cache_calls[2]
+    expected = max(0, min(
+        _prefix_len(judge1_ids, attempt2_ids),
+        len(judge1_ids),  # judge cache is longer; identity clamps reuse
+        len(attempt2_ids) - 1,
+    ))
+    assert cache_len2 == expected > 0
+
+
+def test_kv_stats_attribution_order(app_module, fake_model):
+    fake_model.script_judge("requirement-check", ['{"score": "yes"}'])
+    final = drive(app_module,
+                  adapters=("requirement-check", "uncertainty", "guardian-core"),
+                  rules="Anything.")[-1]
+    notes = []
+    for t in assistant_texts(final):
+        notes.extend(KV_NOTE_RE.findall(t))
+    assert len(notes) == len(fake_model.cache_calls) == 4
+    for (hits, total, _pct), (adapter, cache_len, ids) in zip(
+        notes, fake_model.cache_calls
+    ):
+        assert int(hits) == cache_len, adapter
+        assert int(total) == len(ids), adapter
+
+
+def test_kv_note_never_reaches_prompts(app_module, fake_model):
+    fake_model.script_judge("requirement-check", ['{"score": "yes"}'])
+    drive(app_module, adapters=("requirement-check", "uncertainty"), rules="Anything.")
+    tok = app_module.tokenizer
+    for _, ids, _ in fake_model.calls:
+        assert "KV cache" not in tok.decode(ids)
+
+
+def test_kv_math_failure_falls_back(app_module, fake_model, monkeypatch):
+    """Cache-math errors must degrade to cache-less generation, not crash."""
+    import switch_backend
+
+    def boom(a, b):
+        raise RuntimeError("synthetic cache-math failure")
+
+    monkeypatch.setattr(switch_backend, "_common_prefix_len", boom)
+    final = drive(app_module, adapters=("uncertainty",))[-1]
+    # first draft never computes a prefix (no identity yet) — still cached
+    assert fake_model.cache_calls[0][1] == 0
+    # the judge's math failed: pristine call, no cache injected
+    judge = next(c for c in fake_model.cache_calls if c[0] == "uncertainty")
+    assert judge[1] is None
+    bubble = next(t for t in assistant_texts(final) if '"certainty"' in t)
+    assert f"⚡ KV cache: 0/{len(judge[2])}" in bubble
+
+
+def test_kv_resets_between_interactions(app_module, fake_model):
+    drive(app_module, adapters=("uncertainty",))
+    drive(app_module, adapters=("uncertainty",))
+    drafts = [c for c in fake_model.cache_calls if c[0] is None]
+    assert len(drafts) == 2
+    assert drafts[1][1] == 0, "second interaction must start cold"
+
+
+def test_final_note_inserted_before_kv_footnote(app_module, fake_model):
+    fake_model.script_judge("requirement-check", ['{"score": "yes"}'])
+    final = drive(app_module, adapters=("requirement-check",), rules="Anything.")[-1]
+    check = next(t for t in assistant_texts(final) if "requirement_check" in t)
+    assert check.index("converged") < check.index("⚡ KV cache"), check
+    assert check.endswith("</span>")

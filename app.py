@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import queue
 from threading import Thread
 
@@ -93,6 +94,27 @@ def status_display(text):
 
 ATTEMPT_NOTE = {True: "✅ requirement satisfied", False: "❌ requirement not satisfied"}
 
+# Every generation's KV-cache reuse is reported under the bubble it produced.
+# KV_META_MARKER must stay the exact prefix kv_note_meta() emits: the "final"
+# outcome note is spliced in front of it.
+KV_META_MARKER = "<br>⚡ KV cache: "
+
+
+def _kv_text(kv):
+    hits, total = kv
+    pct = 100 * hits / total if total else 0.0
+    return f"KV cache: {hits}/{total} prompt tokens reused ({pct:.0f}% hit)"
+
+
+def kv_note_md(kv):
+    """Markdown form, for draft bubbles."""
+    return f"\n\n⚡ `{_kv_text(kv)}`" if kv else ""
+
+
+def kv_note_meta(kv):
+    """Plain-text form for meta-note spans (markdown doesn't render there)."""
+    return f"<br>⚡ {_kv_text(kv)}" if kv else ""
+
 
 # ---------------------------------------------------------------- generation
 def _stream_draft(prompt, requirements, gen_options):
@@ -156,11 +178,18 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
       ("status", text)                    — progress notes for the UI
       ("partial", i, text)                — attempt i's draft so far
                                             (accumulated, token-streamed)
-      ("attempt", i, text)                — a finished draft attempt
-      ("check", i, passed, json)          — the requirement-check aLoRA's
+      ("attempt", i, text, kv)            — a finished draft attempt
+      ("check", i, passed, json, kv)      — the requirement-check aLoRA's
                                             verdict on attempt i (IVR only)
       ("final", index, success, attempts) — which attempt was selected
-      ("verdict", adapter, text)          — a judge adapter's verdict
+      ("verdict", adapter, text, kv)      — a judge adapter's verdict
+
+    kv is the generation's KV-cache stats (hits, total_prompt_tokens) or
+    None. Stats attribution is deterministic: all generation is serialized
+    on the backend lock and the stages here run sequentially, so each stage
+    pops exactly the stats of the generation it just ran. Popping the draft's
+    stats must happen BEFORE mfuncs.validate, or draft and judge entries
+    would merge.
     """
     gen_options = {"max_new_tokens": int(max_new_tokens)}
     if temperature > 0:
@@ -171,6 +200,25 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
 
     use_ivr = "requirement-check" in adapters and rules.strip()
 
+    backend.begin_interaction()
+
+    def pop_kv():
+        stats = backend.pop_kv_stats()
+        if len(stats) != 1:
+            logging.getLogger(__name__).warning(
+                "expected exactly one KV stats entry, got %d", len(stats)
+            )
+        return stats[-1] if stats else None
+
+    try:
+        yield from _run_interaction(
+            prompt, adapters, rules, gen_options, loop_budget, use_ivr, pop_kv
+        )
+    finally:
+        backend.end_interaction()
+
+
+def _run_interaction(prompt, adapters, rules, gen_options, loop_budget, use_ivr, pop_kv):
     if use_ivr:
         # Manual instruct → validate → repair. mellea's stock sampling
         # strategies validate with output=, which wraps the draft in a
@@ -196,14 +244,16 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
                     yield ("partial", i, item[1])
                 else:  # independent resample per attempt: fresh ctx each time
                     _, draft_text, draft_ctx = item
+            kv_draft = pop_kv()  # must pop before validate generates
             validations = mfuncs.validate([requirement], draft_ctx, backend)
+            kv_check = pop_kv()
             passed = all(bool(v) for v in validations)
             # For aLoRA validation, reason is the adapter's parsed JSON
             # verdict (e.g. {"requirement_check": {"score": 0.97}}).
             verdicts = " ".join(v.reason for v in validations if v.reason)
             attempts.append((draft_text, draft_ctx))
-            yield ("attempt", i, draft_text)
-            yield ("check", i, passed, verdicts)
+            yield ("attempt", i, draft_text, kv_draft)
+            yield ("check", i, passed, verdicts, kv_check)
             if passed:
                 success = True
                 break
@@ -220,7 +270,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
                 yield ("partial", 1, item[1])
             else:
                 _, draft_text, final_ctx = item
-        yield ("attempt", 1, draft_text)
+        yield ("attempt", 1, draft_text, pop_kv())
 
     for adapter in adapters:
         # Verdict bubbles show the JSON mellea parses out of the adapter's
@@ -235,6 +285,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
                 "uncertainty",
                 f'{{"certainty": {certainty:.2f}}} — '
                 f"the model is {verdict} in this answer.",
+                pop_kv(),
             )
         elif adapter == "guardian-core":
             yield ("status", "guardian-core aLoRA is screening the answer…")
@@ -244,6 +295,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
                 "verdict",
                 "guardian-core",
                 f'{{"guardian": {{"score": {risk:.2f}}}}} — {verdict}.',
+                pop_kv(),
             )
 
 
@@ -301,7 +353,8 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 status_pending = False
                 partial_open = True
         elif kind == "attempt":
-            text = draft_display(event[1], event[2])
+            _, i, text, kv = (*event, None)[:4]
+            text = draft_display(i, text) + kv_note_md(kv)
             if partial_open:  # finalize the streaming bubble in place
                 history = history[:-1] + [{"role": "assistant", "content": text}]
                 partial_open = False
@@ -309,12 +362,12 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 history = drop_status(history) + [{"role": "assistant", "content": text}]
             status_pending = False
         elif kind == "check":
-            _, _i, passed, verdicts = event
+            _, _i, passed, verdicts, kv = (*event, None)[:5]
             note = ATTEMPT_NOTE[passed]
             if verdicts:
                 note = f"{verdicts} — {note}"
             history = drop_status(history) + [
-                {"role": "assistant", "content": meta_display(note)}
+                {"role": "assistant", "content": meta_display(note + kv_note_meta(kv))}
             ]
             status_pending = False
         elif kind == "final":
@@ -327,10 +380,15 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
             )
             last = history[-1]["content"]
             if last.startswith('<span class="meta-note">'):
-                # Join the outcome onto the requirement-check score bubble.
-                # <br>, not \n: markdown line breaks don't render inside a
-                # raw HTML span.
-                merged = f"{last[:-len('</span>')]}<br>{note}</span>"
+                # Join the outcome onto the requirement-check score bubble,
+                # ahead of its KV footnote when present. <br>, not \n:
+                # markdown line breaks don't render inside a raw HTML span.
+                body = last[: -len("</span>")]
+                head, sep, tail = body.rpartition(KV_META_MARKER)
+                if sep:
+                    merged = f"{head}<br>{note}{sep}{tail}</span>"
+                else:
+                    merged = f"{body}<br>{note}</span>"
                 history = history[:-1] + [{"role": "assistant", "content": merged}]
             else:
                 history = drop_status(history) + [
@@ -338,9 +396,9 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
                 ]
             status_pending = False
         elif kind == "verdict":
-            text = event[2]
+            _, _adapter, text, kv = (*event, None)[:4]
             history = drop_status(history) + [
-                {"role": "assistant", "content": meta_display(text)}
+                {"role": "assistant", "content": meta_display(text + kv_note_meta(kv))}
             ]
             status_pending = False
         yield history
@@ -395,6 +453,12 @@ with [Mellea](https://docs.mellea.ai)'s HuggingFace backend:
    by the checker's verdict in a separate bubble.
 3. **uncertainty** and **guardian-core** then judge the final answer, each
    in its own bubble. Use **Clear** to start over.
+
+Under each response a ⚡ note reports that generation's **KV-cache hit
+rate**: adapter and retry turns reuse the cached conversation prefix
+(actual measured reuse — aLoRA adapters only apply after their activation
+token, so the base KV stays valid). The first draft of every interaction
+is a cold start because ZeroGPU releases the GPU between interactions.
 
 The adapters are activated by control tokens spliced in by the model's chat
 template — no separate adapter weights are loaded. Judged turns are always
