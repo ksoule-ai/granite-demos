@@ -14,8 +14,8 @@ from mellea import MelleaSession
 from mellea.stdlib.context import ChatContext
 from mellea.stdlib.components.intrinsic import core as core_intrinsics
 from mellea.stdlib.components.intrinsic import guardian as guardian_intrinsics
+from mellea.stdlib import functional as mfuncs
 from mellea.stdlib.requirements import ALoraRequirement
-from mellea.stdlib.sampling import RejectionSamplingStrategy
 
 from switch_backend import SwitchBackend
 
@@ -113,39 +113,54 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
     else:
         gen_options["do_sample"] = False
 
-    m = MelleaSession(backend, ctx=ChatContext())
     use_ivr = "requirement-check" in adapters and rules.strip()
 
     if use_ivr:
+        # Manual instruct → validate → repair. mellea's stock sampling
+        # strategies validate with output=, which wraps the draft in a
+        # SimpleContext whose generation view is empty — the requirement-check
+        # aLoRA then judges without ever seeing the draft and returns blind,
+        # response-independent verdicts (upstream mellea 0.6.0 issue; see the
+        # blind-judge report). Validating on the live session context instead
+        # gives the judge the layout it was trained on:
+        # user task → draft answer → <requirements> eval turn.
+        requirement = ALoraRequirement(rules.strip())
+        budget = int(loop_budget)
         yield (
             "status",
-            f"Running instruct → validate → repair (budget: {int(loop_budget)} attempts, "
+            f"Running instruct → validate → repair (budget: {budget} attempts, "
             "validated by the requirement-check aLoRA)…",
         )
-        result = m.instruct(
-            prompt,
-            requirements=[ALoraRequirement(rules.strip())],
-            strategy=RejectionSamplingStrategy(loop_budget=int(loop_budget)),
-            return_sampling_results=True,
-            model_options=gen_options,
-        )
-        for i, (gen, validations) in enumerate(
-            zip(result.sample_generations, result.sample_validations), start=1
-        ):
-            passed = all(bool(v) for _, v in validations)
+        attempts = []
+        success = False
+        for i in range(1, budget + 1):
+            m = MelleaSession(backend, ctx=ChatContext())  # independent resample
+            output = m.instruct(
+                prompt,
+                requirements=[requirement],
+                strategy=None,
+                model_options=gen_options,
+            )
+            validations = mfuncs.validate([requirement], m.ctx, backend)
+            passed = all(bool(v) for v in validations)
             # For aLoRA validation, reason is the adapter's parsed JSON
             # verdict (e.g. {"requirement_check": {"score": 0.97}}).
-            verdicts = " ".join(v.reason for _, v in validations if v.reason)
-            yield ("attempt", i, str(gen), passed, verdicts)
-        yield (
-            "final",
-            result.result_index,
-            result.success,
-            len(result.sample_generations),
-        )
+            verdicts = " ".join(v.reason for v in validations if v.reason)
+            attempts.append((str(output), m.ctx))
+            yield ("attempt", i, str(output), passed, verdicts)
+            if passed:
+                success = True
+                break
+        # On exhaustion keep the first draft, matching stock rejection
+        # sampling's select_from_failure.
+        chosen = len(attempts) - 1 if success else 0
+        final_ctx = attempts[chosen][1]
+        yield ("final", chosen, success, len(attempts))
     else:
         yield ("status", "Generating…")
+        m = MelleaSession(backend, ctx=ChatContext())
         output = m.instruct(prompt, strategy=None, model_options=gen_options)
+        final_ctx = m.ctx
         yield ("attempt", 1, str(output), None)
 
     for adapter in adapters:
@@ -154,7 +169,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
         # 0-1 value), followed by a plain-English reading.
         if adapter == "uncertainty":
             yield ("status", "uncertainty aLoRA is scoring the answer…")
-            certainty = core_intrinsics.check_certainty(m.ctx, backend)
+            certainty = core_intrinsics.check_certainty(final_ctx, backend)
             verdict = "confident" if certainty >= 0.5 else "not confident"
             yield (
                 "verdict",
@@ -164,7 +179,7 @@ def run_switch(prompt, adapters, rules, max_new_tokens, temperature, loop_budget
             )
         elif adapter == "guardian-core":
             yield ("status", "guardian-core aLoRA is screening the answer…")
-            risk = guardian_intrinsics.guardian_check(m.ctx, backend, criteria="harm")
+            risk = guardian_intrinsics.guardian_check(final_ctx, backend, criteria="harm")
             verdict = "⚠️ risk detected" if risk > 0.5 else "no harm detected"
             yield (
                 "verdict",

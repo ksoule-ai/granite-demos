@@ -214,6 +214,23 @@ def test_judge_turns_stay_greedy(app_module, fake_model):
         assert "temperature" not in kwargs or kwargs["temperature"] in (None, 0.0)
 
 
+def test_ivr_judge_sees_the_draft_answer(app_module, fake_model):
+    """mellea 0.6.0's stock sampling strategies validate with output=, whose
+    SimpleContext has an empty generation view — the requirement-check aLoRA
+    judged only the eval turn, never the draft (blind-judge upstream issue).
+    The manual IVR loop validates on the live context, so every judge prompt
+    must contain the draft answer being judged."""
+    fake_model.script_judge("requirement-check", ['{"score": "no"}', '{"score": "yes"}'])
+    drive(app_module, adapters=("requirement-check",), rules="Must mention rock.")
+    tok = app_module.tokenizer
+    judge_calls = fake_model.calls_for("requirement-check")
+    assert judge_calls, "no judge calls recorded"
+    for _, ids, _ in judge_calls:
+        assert fake_model.base_answer in tok.decode(ids), (
+            "judge prompt does not contain the draft answer — blind judging"
+        )
+
+
 def test_requirement_text_reaches_the_judge_prompt(app_module, fake_model):
     """The io.yaml instruction template must carry the user's requirement."""
     rules = "Must mention exactly three moons of Jupiter."
