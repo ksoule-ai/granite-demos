@@ -480,11 +480,12 @@ def test_kv_resets_between_interactions(app_module, fake_model):
     assert drafts[1][1] == 0, "second interaction must start cold"
 
 
-def test_final_note_inserted_before_kv_footnote(app_module, fake_model):
+def test_final_note_appended_after_kv_footnote(app_module, fake_model):
     fake_model.script_judge("requirement-check", ['{"score": "yes"}'])
     final = drive(app_module, adapters=("requirement-check",), rules="Anything.")[-1]
     check = next(t for t in assistant_texts(final) if "requirement_check" in t)
-    assert check.index("converged") < check.index("⚡ <code>KV cache"), check
+    # order within the bubble: verdict, KV note, then the IVR outcome
+    assert check.index("⚡ <code>KV cache") < check.index("converged"), check
     # the outcome line is bold, not italic
     assert "<strong>✅ IVR loop converged" in check, check
     assert check.endswith("</span>")

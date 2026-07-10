@@ -95,11 +95,6 @@ def status_display(text):
 ATTEMPT_NOTE = {True: "✅ requirement satisfied", False: "❌ requirement not satisfied"}
 
 # Every generation's KV-cache reuse is reported under the bubble it produced.
-# KV_META_MARKER must stay the exact prefix kv_note_meta() emits: the "final"
-# outcome note is spliced in front of it.
-KV_META_MARKER = "<br>⚡ <code>KV cache: "
-
-
 def _kv_text(kv):
     hits, total = kv
     pct = 100 * hits / total if total else 0.0
@@ -401,15 +396,10 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
             note = f"<strong>{note}</strong>"
             last = history[-1]["content"]
             if last.startswith('<span class="meta-note">'):
-                # Join the outcome onto the requirement-check score bubble,
-                # ahead of its KV footnote when present. <br>, not \n:
+                # Join the outcome onto the end of the requirement-check
+                # score bubble, beneath its KV footnote. <br>, not \n:
                 # markdown line breaks don't render inside a raw HTML span.
-                body = last[: -len("</span>")]
-                head, sep, tail = body.rpartition(KV_META_MARKER)
-                if sep:
-                    merged = f"{head}<br>{note}{sep}{tail}</span>"
-                else:
-                    merged = f"{body}<br>{note}</span>"
+                merged = f"{last[:-len('</span>')]}<br>{note}</span>"
                 history = history[:-1] + [{"role": "assistant", "content": merged}]
             else:
                 history = drop_status(history) + [
