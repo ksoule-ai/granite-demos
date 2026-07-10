@@ -88,6 +88,12 @@ def meta_display(text):
     return f'<span class="meta-note">{text}</span>'
 
 
+def json_span(text):
+    """Wrap an adapter's JSON verdict so the CSS keeps it upright (the meta
+    span italicizes everything else)."""
+    return f'<span class="verdict-json">{text}</span>'
+
+
 def status_display(text):
     return meta_display(f"⏳ {text}")
 
@@ -291,8 +297,8 @@ def _run_interaction(prompt, adapters, rules, gen_options, loop_budget, use_ivr,
             yield (
                 "verdict",
                 "uncertainty",
-                f'{{"certainty": {certainty:.2f}}} — '
-                f"the model is {verdict} in this answer.",
+                json_span(f'{{"certainty": {certainty:.2f}}}')
+                + f" — the model is {verdict} in this answer.",
                 pop_kv(),
             )
         elif adapter == "guardian-core":
@@ -302,7 +308,8 @@ def _run_interaction(prompt, adapters, rules, gen_options, loop_budget, use_ivr,
             yield (
                 "verdict",
                 "guardian-core",
-                f'{{"guardian": {{"score": {risk:.2f}}}}} — {verdict}.',
+                json_span(f'{{"guardian": {{"score": {risk:.2f}}}}}')
+                + f" — {verdict}.",
                 pop_kv(),
             )
 
@@ -378,7 +385,7 @@ def bot_respond(history, adapter_choices, rules, max_new_tokens, temperature, lo
             _, _i, passed, verdicts, kv = (*event, None)[:5]
             note = ATTEMPT_NOTE[passed]
             if verdicts:
-                note = f"{verdicts} — {note}"
+                note = f"{json_span(verdicts)} — {note}"
             history = drop_status(history) + [
                 {"role": "assistant", "content": meta_display(note + kv_note_meta(kv))}
             ]
@@ -449,6 +456,10 @@ CSS = """
 .message:has(.meta-note) strong {
     font-style: normal;
     font-weight: 700;
+}
+/* adapter JSON verdicts: upright, not italic */
+.message:has(.meta-note) .verdict-json {
+    font-style: normal;
 }
 /* KV notes inside meta bubbles match the drafts' inline-code look */
 .message:has(.meta-note) code {

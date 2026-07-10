@@ -153,6 +153,26 @@ def test_multiple_judges_get_their_own_bubbles(app_module, fake_model):
     assert judged == ["uncertainty", "guardian-core"]
 
 
+def test_verdict_json_wrapped_reading_not(app_module, fake_model):
+    """The adapter JSON is wrapped in a verdict-json span (CSS keeps it
+    upright); the English reading after the em dash stays outside it."""
+    fake_model.script_judge("requirement-check", ['{"score": "no"}'])
+    final = drive(app_module,
+                  adapters=("requirement-check", "uncertainty", "guardian-core"),
+                  rules="Anything.", loop_budget=1)[-1]
+    texts = assistant_texts(final)
+    for json_key, reading in [
+        ("requirement_check", "requirement not satisfied"),
+        ("certainty", "the model is"),
+        ("guardian", "harm detected"),
+    ]:
+        bubble = next(t for t in texts if json_key in t)
+        assert f'<span class="verdict-json">{{"{json_key}' in bubble, bubble
+        # the reading sits after the closing span, i.e. outside it
+        assert "</span>" in bubble.split(reading)[0]
+        assert f'verdict-json">{reading}' not in bubble
+
+
 def test_meta_messages_purple_drafts_plain(app_module, fake_model):
     """Every non-draft assistant message carries the meta-note marker (light
     purple + italics via CSS); draft/answer bubbles stay plain markdown."""
