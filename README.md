@@ -19,38 +19,51 @@ tags:
 
 # granite-switch demos
 
-**The Space app ([`app.py`](app.py))** drives
-[`ibm-granite/granite-switch-4.1-8b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-8b-preview)
-on ZeroGPU through [Mellea](https://docs.mellea.ai)'s HuggingFace backend:
-the **requirement-check** aLoRA powers an instruct–validate–repair loop, and
-**uncertainty** / **guardian-core** judge the final answer.
-[`switch_backend.py`](switch_backend.py) is the glue that teaches mellea's
-`LocalHFBackend` to activate the checkpoint's *embedded* adapters via chat
-template control tokens (mellea 0.6.0 only supports embedded adapters on its
-vLLM/OpenAI backend out of the box). Tests: `.venv/bin/python -m pytest tests/`.
+Two ways to run IBM's [Granite Switch](https://github.com/generative-computing/granite-switch)
+preview checkpoint and exercise its embedded adapters:
 
-The rest of this README covers the separate **Inference Endpoint** deployment
-and the reference requirement-check CLI.
+1. **[Activity 1 — HF Inference Endpoint with a custom vLLM container](#activity-1--granite-switch-on-a-hugging-face-inference-endpoint)**
+   hosts `granite-switch-4.1-3b-preview` behind an OpenAI-compatible API and calls
+   the **requirement-check** adapter from raw Python. Proven deployment recipe for a
+   preview architecture that stock vLLM can't load.
+2. **[Activity 2 — ZeroGPU Space demo on a HF Transformers backend](#activity-2--zerogpu-space-demo-mellea--hf-transformers-backend)**
+   drives `granite-switch-4.1-8b-preview` in-process on ZeroGPU through
+   [Mellea](https://docs.mellea.ai), with an instruct–validate–repair loop, token
+   streaming, and live KV-cache metrics. This is the app the Space frontmatter above
+   points at (`app.py`).
 
-# granite-switch endpoint and requirement-check test
+Both use the same architecture; they differ in **serving model** (persistent vLLM
+server vs. in-process Transformers) and therefore in what's easy: Activity 1 gives you
+a standing OpenAI endpoint other apps can call; Activity 2 fits a single-checkpoint
+demo onto free ZeroGPU hardware.
 
-Host [`ibm-granite/granite-switch-4.1-3b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview) on a Hugging Face Inference Endpoint (vLLM backend) and call its **requirement-check** adapter from Python.
+## Background: what Granite Switch is
+
+Granite Switch is **one checkpoint bundling ~12 embedded LoRA/aLoRA adapters** (RAG,
+Core, Guardian). You select one per request **by name**, and the model's chat template
+splices in a control token that activates that adapter's weights at inference — no
+separate adapter files are loaded. For example, `requirement-check` judges whether an
+assistant response satisfies user-specified constraints and returns
+`{"score": "yes"|"no"}`; `uncertainty` scores the model's confidence; `guardian-core`
+screens for harm.
+
+Its model type, `granite_switch`, is **not** in stock vLLM or Transformers — it ships
+only in the separate [`granite-switch`](https://github.com/generative-computing/granite-switch)
+pip package. Both activities below install that package; `--trust-remote-code` does **not**
+help, because the architecture lives in the package, not as remote code in the model repo.
+
+---
+
+# Activity 1 — Granite Switch on a Hugging Face Inference Endpoint
+
+Host [`ibm-granite/granite-switch-4.1-3b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview)
+on a Hugging Face Inference Endpoint (vLLM backend) and call its **requirement-check**
+adapter from Python.
 
 > **Already deployed?** See [ENDPOINT.md](ENDPOINT.md) for the live endpoint's
 > URL, auth, and how to point other projects at it.
 
-Granite Switch is one checkpoint bundling ~12 embedded LoRA/aLoRA adapters
-(RAG, Core, Guardian). You select one per request by name. The `requirement-check`
-adapter judges whether an assistant response satisfies a set of user-specified
-constraints and returns `{"score": "yes"|"no"}`.
-
----
-
 ## Why this needs a custom container (read first)
-
-Granite Switch is a **preview architecture**. Its model type, `granite_switch`,
-is **not** in stock vLLM or Transformers — it ships only in the separate
-[`granite-switch`](https://github.com/generative-computing/granite-switch) package.
 
 If you deploy with HF's managed vLLM engine (or a plain `vllm/vllm-openai` image),
 the endpoint builds but **fails to start** with:
@@ -60,15 +73,9 @@ Value error, The checkpoint you are trying to load has model type `granite_switc
 but Transformers does not recognize this architecture.
 ```
 
-`--trust-remote-code` does **not** fix this, because the architecture isn't shipped
-as remote code in the model repo — it's in the pip package. So a **custom container
-that installs `granite-switch` is required**, not optional. Section 1 builds it.
+So a **custom container that installs `granite-switch` is required**, not optional.
 
----
-
-## 1. Deploy the endpoint
-
-### 1a. Build the custom container
+## 1a. Build the custom container
 
 The image is just stock vLLM plus the `granite-switch` package. See
 [`docker/Dockerfile`](docker/Dockerfile):
@@ -106,7 +113,7 @@ ghcr.io/<your-lowercase-username>/granite-switch-vllm:latest
 > GHCR image names must be lowercase. If your GitHub username has capitals, the tag
 > in the workflow must use the lowercase form.
 
-### 1b. Create the endpoint
+## 1b. Create the endpoint
 
 1. [ui.endpoints.huggingface.co](https://ui.endpoints.huggingface.co) → **New** →
    **Model repository** → `ibm-granite/granite-switch-4.1-3b-preview`. (HF mounts the
@@ -137,7 +144,7 @@ ghcr.io/<your-lowercase-username>/granite-switch-vllm:latest
 6. Deploy and wait for **Running**. Your endpoint URL looks like
    `https://xxxx.us-east-1.aws.endpoints.huggingface.cloud`.
 
-### 1c. Sanity checks after it's up
+## 1c. Sanity checks after it's up
 
 - **Status reaches Running** and the startup logs show vLLM loading the
   `granite_switch` architecture and prefix caching enabled (no "does not recognize
@@ -157,9 +164,7 @@ ghcr.io/<your-lowercase-username>/granite-switch-vllm:latest
   print(r.choices[0].message.content)
   ```
 
----
-
-## 2. Run the demo
+## 1d. Run the requirement-check CLI demo
 
 ```bash
 cp .env.example .env      # set HF_ENDPOINT_URL (append /v1) and HF_TOKEN
@@ -174,30 +179,7 @@ Expected output:
 [ bad] requirements satisfied: False  (11 words)
 ```
 
----
-
-## 3. Test the ZeroGPU Space app (no GPU needed)
-
-`tests/` verifies `app.py` before deploying it as a Space. Everything except
-the 60 GB checkpoint is real (gradio, transformers streaming, torch); the
-model is faked, and adapter names are validated against
-`tests/adapter_catalog.json` — a mirror of the
-[upstream adapter catalog](https://github.com/generative-computing/granite-switch/blob/main/docs/adapter_catalog.html).
-
-```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
-.venv/bin/python -m pytest tests/ -v
-```
-
-Covered: adapter names exist upstream, UI builds under the pinned gradio,
-documents/requirements fields toggle and reach the prompt, streaming works
-end-to-end through `TextIteratorStreamer`. Not covered: real weights and
-generation quality — after deploying, send one message per adapter as a
-manual smoke test.
-
----
-
-## How the adapter is invoked
+## How the adapter is invoked (raw API)
 
 vLLM applies the model's chat template server-side, so the adapter is selected by
 passing `adapter_name` through `chat_template_kwargs`:
@@ -218,17 +200,14 @@ client.chat.completions.create(
 
 The final user turn carries the constraints (in a `<requirements>` tag) plus a fixed
 evaluation instruction. The adapter replies with `{"score": "yes"}` or `{"score": "no"}`.
+Other adapters work the same way — swap the `adapter_name` and follow each adapter's
+message protocol.
 
----
+## Notes (Activity 1)
 
-## Notes
-
-- IBM's preferred high-level client is [Mellea](https://mellea.ai), which wraps
-  adapter selection and constrained decoding. This demo uses the raw
-  OpenAI-compatible API so there's no extra dependency and the mechanics are visible.
-- Other embedded adapters (`guardian-core`, `uncertainty`, `context-attribution`,
-  `factuality-detection`, …) work the same way — swap the `adapter_name` and follow
-  each adapter's message protocol.
+- This activity uses the raw OpenAI-compatible API so there's no extra dependency and
+  the mechanics are visible. IBM's preferred high-level client is
+  [Mellea](https://mellea.ai) — that's the path Activity 2 takes.
 - **KV-cache reporting:** prefix caching (APC) is on by default in this vLLM, but the
   `cached_tokens` field in the usage response is gated behind
   `--enable-prompt-tokens-details` (included in the args above). Caching still works
@@ -239,12 +218,10 @@ evaluation instruction. The adapter replies with `{"score": "yes"}` or `{"score"
   the base model's KV cache. Whether raw, stateless OpenAI-API calls realize that
   cross-adapter reuse (vs. vLLM keying the cache per adapter id) is an open
   implementation detail — a Mellea-managed session is the reliable way to get it. Since
-  this demo is raw-API, don't assume cross-adapter reuse without measuring prefill
+  this activity is raw-API, don't assume cross-adapter reuse without measuring prefill
   tokens / TTFT.
 
----
-
-## Troubleshooting
+## Troubleshooting (Activity 1)
 
 - **"does not recognize this architecture" at startup** → the image is stock vLLM, not
   the custom one, or the `granite-switch` install failed. Check the Actions build log
@@ -257,3 +234,65 @@ evaluation instruction. The adapter replies with `{"score": "yes"}` or `{"score"
 - **GitHub Actions build fails with "no space left on device"** → CUDA images are large;
   add a free-disk-space step at the top of the build job (e.g.
   `jlumbroso/free-disk-space`) or prune before building.
+
+---
+
+# Activity 2 — ZeroGPU Space demo (Mellea + HF Transformers backend)
+
+The Space app ([`app.py`](app.py)) drives
+[`ibm-granite/granite-switch-4.1-8b-preview`](https://huggingface.co/ibm-granite/granite-switch-4.1-8b-preview)
+**in-process on ZeroGPU** through [Mellea](https://docs.mellea.ai)'s HuggingFace
+backend — no separate server. It turns the checkpoint's adapters into an interactive
+instruct–validate–repair (IVR) workflow.
+
+Each interaction:
+
+1. Pick adapters (all three by default), optionally state **requirements**, submit a prompt.
+2. With **requirement-check** selected, Mellea runs an **instruct → validate → repair**
+   loop: every draft is judged by the embedded requirement-check aLoRA and regenerated
+   until it passes or the attempt budget runs out. Draft tokens **stream** into the chat.
+3. **uncertainty** and **guardian-core** then judge the final answer, each in its own bubble.
+4. Every generation reports a ⚡ **KV-cache hit rate**.
+
+## Architecture
+
+- **[`switch_backend.py`](switch_backend.py)** — `SwitchBackend(LocalHFBackend)`, the
+  glue that teaches Mellea 0.6.0's HF backend to activate Granite Switch's *embedded*
+  adapters via the chat template's control tokens. Mellea 0.6.0 only supports embedded
+  adapters on its vLLM/OpenAI backend out of the box; this makes them work in-process.
+  It also implements **per-interaction KV prefix reuse** with a measured hit-rate metric
+  (adapter/retry turns reuse the cached conversation prefix; judge prompts are re-expressed
+  on the draft's actual decode tokens so reuse extends into the generation, not just the
+  prompt).
+- **[`app.py`](app.py)** — the Gradio UI and the IVR orchestration. Requirements are
+  validated on the **live conversation context** (working around a Mellea 0.6.0 issue
+  where the stock sampling strategies validate against an empty context, so the aLoRA
+  judges blind). Drafts identical to an already-failed attempt are not re-judged.
+
+## Run / test the Space app (no GPU needed)
+
+`tests/` verifies `app.py` before deploying it as a Space. Everything except the model
+weights is real — the actual `mellea`, `transformers`, `torch`, `gradio`, and
+`granite_switch` packages, and the **real tokenizer + chat template render every
+prompt**; only `model.generate` is faked. Adapter names are validated against
+`tests/adapter_catalog.json`, a mirror of the
+[upstream adapter catalog](https://github.com/generative-computing/granite-switch/blob/main/docs/adapter_catalog.html).
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt pytest
+.venv/bin/python -m pytest tests/ -v
+```
+
+Covered: embedded-adapter activation tokens reach the prompt (and never on plain
+generation), the IVR loop (retry / converge / exhaust, greedy judges), token streaming,
+KV-cache arithmetic and attribution, and UI rendering. Not covered: real weights and
+generation quality — after deploying, send one message per adapter as a manual smoke test.
+
+## Dependency notes (Activity 2)
+
+- **Mellea is installed *without* its `[hf]` extra** (see [requirements.txt](requirements.txt)):
+  that extra pins `transformers<5`, which conflicts with granite-switch's `>=5.5.1`
+  requirement. The pieces of the extra the HF backend actually needs at inference time
+  (`llguidance`, `xgrammar`) are listed explicitly instead.
+- **Python 3.12** — ZeroGPU's builder maxes out at 3.12, and Mellea requires ≥3.11.
