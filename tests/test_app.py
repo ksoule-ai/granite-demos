@@ -353,6 +353,22 @@ def test_requirement_text_reaches_the_judge_prompt(app_module, fake_model):
     assert rules in tok.decode(ids)
 
 
+def test_requirement_not_in_draft_prompt(app_module, fake_model):
+    """The requirement is validation-only: the model generates the draft
+    without ever seeing it. It must appear in the judge (requirement-check)
+    prompt but in none of the draft (non-adapter) generation prompts."""
+    rules = "Must mention exactly three moons of Jupiter."
+    drive(app_module, adapters=("requirement-check",), rules=rules)
+    tok = app_module.tokenizer
+    draft_calls = [c for c in fake_model.calls if c[0] is None]
+    assert draft_calls, "no draft generation happened"
+    for _, ids, _ in draft_calls:
+        assert rules not in tok.decode(ids), "requirement leaked into the draft prompt"
+    # ...but the judge still sees it
+    judge_ids = fake_model.calls_for("requirement-check")[0][1]
+    assert rules in tok.decode(judge_ids)
+
+
 def test_judge_max_tokens_come_from_io_yaml(app_module, fake_model):
     """User max_new_tokens must not override the judge's tiny token budget."""
     drive(app_module, adapters=("uncertainty",), max_new_tokens=2048)

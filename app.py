@@ -53,16 +53,17 @@ ADAPTER_CHOICES = [
 
 ADAPTER_DESCRIPTIONS = {
     "requirement-check": (
-        "Drives a Mellea **instruct–validate–repair** loop: each draft answer is "
-        "validated by the requirement-check aLoRA and regenerated until it passes "
-        "(or the attempt budget runs out)."
+        "Runs a **validate-and-resample** loop: the model answers without seeing "
+        "your requirement, the requirement-check aLoRA judges each draft against "
+        "it, and the model resamples until a draft passes (or the attempt budget "
+        "runs out)."
     ),
     "uncertainty": "After the final answer, scores how certain the model is about it (0–1).",
     "guardian-core": "After the final answer, screens it for harm and reports a risk score (0–1).",
 }
 
 # Adapters that judge the final answer after it is produced (requirement-check
-# instead steers generation through the IVR loop).
+# instead gates generation through the validate-and-resample loop).
 JUDGE_ADAPTERS = ["uncertainty", "guardian-core"]
 
 
@@ -119,8 +120,15 @@ def kv_note_meta(kv):
 
 
 # ---------------------------------------------------------------- generation
-def _stream_draft(prompt, requirements, gen_options):
+def _stream_draft(prompt, gen_options):
     """Generate one draft with token streaming.
+
+    The draft is generated from the user's prompt alone — requirements are
+    deliberately NOT passed to the Instruction, so the model never sees them
+    during generation. They are used only by the requirement-check aLoRA in
+    the validation step (see _run_interaction). The loop is therefore
+    validate-and-resample: the checker judges each draft post-hoc and the
+    model resamples, rather than being steered toward the requirement.
 
     mellea's streaming is async-only (ModelOption.STREAM +
     ModelOutputThunk.astream()), while this app yields UI events from a sync
@@ -137,7 +145,7 @@ def _stream_draft(prompt, requirements, gen_options):
     out = queue.Queue()
 
     async def produce():
-        action = Instruction(description=prompt, requirements=requirements or [])
+        action = Instruction(description=prompt)
         opts = dict(gen_options)
         opts[ModelOption.STREAM] = True
         mot, gen_ctx = await backend.generate_from_context(
@@ -245,7 +253,9 @@ def _run_interaction(prompt, adapters, rules, gen_options, loop_budget, use_ivr,
         success = False
         for i in range(1, budget + 1):
             draft_text, draft_ctx = "", None
-            for item in _stream_draft(prompt, [requirement], gen_options):
+            # Drafts are generated from the prompt alone (no requirement) —
+            # the requirement is used only in the validation step below.
+            for item in _stream_draft(prompt, gen_options):
                 if item[0] == "partial":
                     yield ("partial", i, item[1])
                 else:  # independent resample per attempt: fresh ctx each time
@@ -279,7 +289,7 @@ def _run_interaction(prompt, adapters, rules, gen_options, loop_budget, use_ivr,
     else:
         yield ("status", "Generating…")
         draft_text, final_ctx = "", None
-        for item in _stream_draft(prompt, [], gen_options):
+        for item in _stream_draft(prompt, gen_options):
             if item[0] == "partial":
                 yield ("partial", 1, item[1])
             else:
@@ -481,9 +491,10 @@ is a single 8B checkpoint with **embedded LoRA adapters**. This demo drives it
 with [Mellea](https://docs.mellea.ai)'s HuggingFace backend:
 
 1. Pick adapters, optionally state **requirements**, and submit a prompt.
-2. With **requirement-check** selected, Mellea runs an
-   **instruct → validate → repair** loop: every draft is judged by the
-   embedded requirement-check aLoRA and regenerated until it passes or the
+2. With **requirement-check** selected, Mellea runs a
+   **validate-and-resample** loop. The model answers your prompt **without
+   seeing the requirement**; the embedded requirement-check aLoRA then judges
+   each draft against it, and the model resamples until a draft passes or the
    attempt budget runs out. Each draft streams into its own bubble, followed
    by the checker's verdict in a separate bubble.
 3. **uncertainty** and **guardian-core** then judge the final answer, each
@@ -528,7 +539,7 @@ greedy; only the drafts use your temperature.
                 value=list(ADAPTER_CHOICES),
                 multiselect=True,
                 label="Adapters",
-                info="requirement-check steers generation (IVR); the others judge the result.",
+                info="requirement-check gates generation (validate-and-resample); the others judge the result.",
             )
             adapter_desc = gr.Markdown(
                 value=get_adapter_description(ADAPTER_CHOICES),
