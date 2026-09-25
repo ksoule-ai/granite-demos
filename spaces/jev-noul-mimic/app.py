@@ -374,11 +374,18 @@ with gr.Blocks(title="Thinking Fast with Granite") as demo:
         "[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview), "
         "makes the same kind of call in one generated token. Give both models the "
         "same input and questions and compare.\n\n"
-        "**How the Granite side works:** Granite never answers the question itself. "
-        "Instead, the answer is prefilled as \"Yes.\" and Granite Switch's embedded "
-        "`uncertainty` adapter scores it. The adapter's certainty that yes is "
-        "correct, c(yes), is the noul. Only the adapter's score digit is generated "
-        "(one token), and its probabilities give the certainty."
+        "**What makes it fast**\n"
+        "- **Uncertainty (UQ) adapter.** Granite Switch has a built-in, calibrated "
+        "uncertainty-quantification adapter that scores how likely an answer is to "
+        "be correct. Prefill the answer \"Yes.\", ask the adapter, and its certainty "
+        "*is* the noul. Only the score digit is generated: one token per question.\n"
+        "- **aLoRA (activated LoRA).** The adapter switches on only at its trigger "
+        "token and reuses the base model's KV cache for everything before it. "
+        "Granite reads your input once, and every question reuses that work.\n\n"
+        "**And it can think slow, too.** The same endpoint, with the same weights, "
+        "also serves Granite as a regular LLM that explains, drafts and works "
+        "through problems in text. Fast gut calls and slow reasoning from one "
+        "deployment. Jev returns decisions only; it doesn't generate text."
     )
     with gr.Row():
         with gr.Column():

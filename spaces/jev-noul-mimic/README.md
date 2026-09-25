@@ -26,6 +26,21 @@ This Space gets the same kind of answer from an open 3B model,
 using one generated token per question, and puts it next to Jev (via
 [OpenRouter](https://openrouter.ai/typesafe)) on the same input.
 
+**What makes it fast**
+
+- **Uncertainty (UQ) adapter.** Granite Switch has a built-in, calibrated
+  uncertainty-quantification adapter that scores how likely an answer is to be
+  correct. Prefill the answer "Yes.", ask the adapter, and its certainty *is*
+  the noul. Only the score digit is generated: one token per question.
+- **aLoRA (activated LoRA).** The adapter switches on only at its trigger token
+  and reuses the base model's KV cache for everything before it. Granite reads
+  the input once, and every question reuses that work.
+
+**And it can think slow, too.** The same endpoint, with the same weights, also
+serves Granite as a regular LLM that explains, drafts and works through
+problems in text. Fast gut calls and slow reasoning from one deployment. Jev
+returns decisions only; it doesn't generate text.
+
 ## How the Granite side produces a noul
 
 Granite Switch runs on vLLM on a Hugging Face Inference Endpoint (see the
