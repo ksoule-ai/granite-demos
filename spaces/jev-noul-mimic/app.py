@@ -18,8 +18,14 @@ The same state and questions go to the real Jev model via OpenRouter (nouls
 only), and the two sets of numbers are shown side by side.
 """
 
-import json
 import os
+
+# ZeroGPU doesn't support torch.compile, and llguidance (Mellea's constrained
+# decoding) compiles its token-mask kernel. Disabling Dynamo makes that a no-op
+# so the kernel runs eagerly. Must be set before torch is imported.
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
