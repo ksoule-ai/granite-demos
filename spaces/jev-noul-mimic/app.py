@@ -285,9 +285,9 @@ SLOW_MAX_TOKENS = 512
 
 
 def _slow_prompt(state: str, question: str) -> str:
-    # Same state-first layout as the fast prompt, so both modes share the
-    # cached state prefix on the endpoint.
-    return f"{state}\n\nAnswer the following question.\n{question}"
+    # Just the state, then the question. The state comes first, as in the fast
+    # prompt, so both modes share the cached state prefix on the endpoint.
+    return f"{state}\n\n{question}"
 
 
 @dataclass

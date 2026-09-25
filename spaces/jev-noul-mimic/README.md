@@ -124,9 +124,9 @@ The **Thinking** toggle switches the page between two modes on the same state:
 All preset examples use yes/no questions, so the same example works in both
 modes.
 
-Both modes hit the same endpoint and the same weights. The slow prompt keeps
-the state-first layout (`<state>`, then "Answer the following question.", then
-the question), so it shares the cached state prefix with fast mode. It batches
+Both modes hit the same endpoint and the same weights. The slow prompt is just
+the state, then the question, with no instruction added. The state still comes
+first, so it shares the cached state prefix with fast mode. It batches
 the same way: question 1 runs alone until its first token arrives (so the
 prefix is cached), then the rest stream in parallel. Answers are capped at 512
 tokens.
