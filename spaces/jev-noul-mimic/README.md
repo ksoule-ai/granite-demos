@@ -111,7 +111,7 @@ gets no reuse.
 
 ## Thinking slow
 
-The **Thinking** slider switches the page between two modes on the same state:
+The **Thinking** toggle switches the page between two modes on the same state:
 
 - **⚡ Fast** (default): yes/no questions. Each gets a Jev noul and a Granite
   noul, as described above.

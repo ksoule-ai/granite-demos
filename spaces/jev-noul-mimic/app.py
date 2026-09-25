@@ -474,12 +474,11 @@ FAST_QUESTIONS_LABEL = f"Yes/no questions (one per line, up to {MAX_QUESTIONS})"
 SLOW_QUESTIONS_LABEL = f"Free-form questions (one per line, up to {MAX_QUESTIONS})"
 
 
-def _is_slow(mode: float) -> bool:
-    """The thinking slider: 0 is fast, 1 is slow."""
-    return float(mode) >= 0.5
+def _is_slow(mode: str) -> bool:
+    return mode == "slow"
 
 
-def think(mode: float, state_text: str, questions_text: str):
+def think(mode: str, state_text: str, questions_text: str):
     """Run the selected mode. Fast: nouls vs Jev. Slow: Granite writes answers."""
     if not _is_slow(mode):
         rows, timing_md, status = compare(state_text, questions_text)
@@ -492,7 +491,7 @@ def think(mode: float, state_text: str, questions_text: str):
         yield gr.skip(), rows, timing_md, warmer.status()
 
 
-def set_mode(mode: float):
+def set_mode(mode: str):
     fast = not _is_slow(mode)
     return (
         gr.update(
@@ -516,13 +515,32 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-# Make the thinking slider read as a fast/slow switch: labels at each end,
-# and no number box.
+# Style the Thinking radio as a segmented toggle: one pill, two equal halves,
+# the selected half in the theme's primary color. The native radio circles are
+# hidden visually but stay in the DOM, so keyboard and screen readers still work.
 CSS = """
-#thinking-ends { display: flex; justify-content: space-between; font-weight: 600; }
-#thinking-ends span:last-child { text-align: right; }
-#thinking-ends small { font-weight: 400; opacity: 0.75; }
-#thinking-slider input[type=number] { display: none; }
+#thinking-toggle .wrap {
+  display: flex; flex-wrap: nowrap; gap: 0; padding: 4px;
+  border: 1px solid var(--border-color-primary); border-radius: 999px;
+  background: var(--background-fill-secondary);
+}
+#thinking-toggle label {
+  flex: 1; justify-content: center; border: none; box-shadow: none;
+  border-radius: 999px; background: transparent; padding: 8px 16px;
+  font-weight: 600; transform: none;
+}
+#thinking-toggle label:hover { background: var(--background-fill-primary); }
+#thinking-toggle label.selected {
+  background: var(--button-primary-background-fill);
+  color: var(--button-primary-text-color);
+}
+#thinking-toggle input[type=radio] {
+  position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0;
+}
+#thinking-toggle label > span { margin-left: 0; }
+#thinking-toggle label:has(input:focus-visible) {
+  outline: 2px solid var(--color-accent); outline-offset: 2px;
+}
 """
 
 
@@ -553,17 +571,17 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "**And it can think slow, too.** The same endpoint, with the same weights, "
         "also serves Granite as a regular LLM that explains, drafts and works "
         "through problems in text. Fast gut calls and slow reasoning from one "
-        "deployment. Jev returns decisions only; it doesn't generate text. Slide "
+        "deployment. Jev returns decisions only; it doesn't generate text. Switch "
         "to **🐢 Thinking slow** below to try it."
     )
     with gr.Row():
         with gr.Column():
-            gr.HTML(
-                '<div id="thinking-ends"><span>⚡ Thinking fast<br><small>yes/no, nouls vs Jev</small></span>'
-                '<span>🐢 Thinking slow<br><small>free-form answers</small></span></div>'
-            )
-            mode = gr.Slider(
-                minimum=0, maximum=1, step=1, value=0, show_label=False, elem_id="thinking-slider"
+            mode = gr.Radio(
+                choices=[("⚡ Thinking fast", "fast"), ("🐢 Thinking slow", "slow")],
+                value="fast",
+                label="Thinking",
+                info="Fast: yes/no questions, nouls vs Jev. Slow: free-form questions, Granite writes answers.",
+                elem_id="thinking-toggle",
             )
             state = gr.Textbox(
                 label="State (text or JSON)",
