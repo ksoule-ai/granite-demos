@@ -263,6 +263,70 @@ LONG = [
     ("Long · incident report", _INCIDENT_REPORT, _INCIDENT_QUESTIONS),
 ]
 
-EXAMPLES = SHORT + LONG
+# 50 yes/no questions on the order record, each answerable from it, with the
+# expected answer alongside for reference (33 yes, 17 no). Stress-tests the
+# batching: one primed question, then 49 in parallel on the cached state.
+ORDER_50_QUESTIONS = [
+    ('Was the order placed through the mobile app?', True),
+    ('Was the order placed on the website?', False),
+    ("Is the customer's email verified?", True),
+    ('Has the customer been a member since before 2022?', True),
+    ("Is this the customer's first order?", False),
+    ('Is the customer in the gold loyalty tier?', True),
+    ('Does the customer prefer email updates over text?', False),
+    ('Has the customer reported a missing item before?', True),
+    ('Did the order include a cast iron dutch oven?', True),
+    ('Did the order include a frying pan?', False),
+    ('Were two enameled saucepans ordered?', True),
+    ('Does the order have three line items?', True),
+    ('Was the dutch oven the most expensive item?', True),
+    ('Is the order total over $200?', True),
+    ('Was shipping free?', True),
+    ('Was tax charged on the order?', True),
+    ('Was the payment made with PayPal?', False),
+    ('Has the payment been captured?', True),
+    ('Has any refund been issued?', False),
+    ('Did the customer ask to change the shipping address?', True),
+    ('Was the address changed by an agent?', True),
+    ('Was the address changed before the order shipped?', True),
+    ('Is the current shipping address on Birchwood Ave?', False),
+    ('Was the order shipped with express shipping?', False),
+    ('Was Parcelway the carrier?', True),
+    ('Was the order picked from the PDX-2 warehouse?', True),
+    ('Did the order ship in more than one package?', False),
+    ('Did the package weigh more than 15 lb?', True),
+    ('Did the package ship on the day it was ordered?', False),
+    ('Was the package scanned at a Portland hub?', True),
+    ('Did weather cause a shipping delay?', True),
+    ('Was the delay caused by a snowstorm?', False),
+    ('Was the promised delivery date September 9?', True),
+    ('Was the promised delivery date met?', False),
+    ('Did the customer contact support about the delay?', True),
+    ("Did support reply to the customer's delay message?", True),
+    ('Was the package delivered?', True),
+    ('Was the package delivered to a front porch?', True),
+    ('Is there a photo of the delivery?', True),
+    ('Was the package delivered on September 12?', True),
+    ('Was the package lost in transit?', False),
+    ('Did the customer report damage?', True),
+    ('Was the saucepan damaged?', False),
+    ('Did the customer upload photos of the damage?', True),
+    ('Did the customer request a return?', True),
+    ('Did the customer ask for a refund rather than a replacement?', False),
+    ('Has a return label been issued?', True),
+    ('Has the customer dropped off the return yet?', False),
+    ('Has a replacement been reserved?', True),
+    ('Has the replacement already shipped?', False),
+]
+
+STRESS = [
+    (
+        "Stress · 50 questions on the order record (JSON)",
+        json.dumps(_ORDER_RECORD, indent=2),
+        "\n".join(q for q, _ in ORDER_50_QUESTIONS),
+    ),
+]
+
+EXAMPLES = SHORT + LONG + STRESS
 EXAMPLE_LABELS = [label for label, _, _ in EXAMPLES]
 EXAMPLE_INPUTS = [[state, questions] for _, state, questions in EXAMPLES]

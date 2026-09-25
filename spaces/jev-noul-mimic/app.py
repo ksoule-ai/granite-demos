@@ -80,7 +80,7 @@ READY_TTL_S = 10 * 60
 # speaks natively; a bare model id like "jev-1.13" routes to typesafe/jev-1.13.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api"
 JEV_MODEL = os.environ.get("JEV_MODEL", "jev-1.13")
-MAX_QUESTIONS = 8
+MAX_QUESTIONS = 50
 
 client = OpenAI(base_url=ENDPOINT_URL, api_key=HF_TOKEN)
 
