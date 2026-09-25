@@ -1,0 +1,6 @@
+# ZeroGPU supports torch up to 2.13.0; granite-switch needs >=2.10.
+torch==2.13.0
+mellea[hf]==0.8.0
+granite-switch[hf]==0.1.0
+typesafe-sdk==0.7.1
+spaces
