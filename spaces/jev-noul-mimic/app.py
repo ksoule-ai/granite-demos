@@ -52,7 +52,7 @@ from huggingface_hub import hf_hub_download
 from openai import OpenAI
 from typesafe_sdk import Noul, TypeSafeClient, TypeSafeError
 
-from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS
+from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS, SLOW_EXAMPLE_INPUTS
 
 # Granite Switch endpoint (vLLM, OpenAI-compatible). HF_ENDPOINT_URL ends in /v1.
 ENDPOINT_URL = os.environ["HF_ENDPOINT_URL"].rstrip("/")
@@ -103,7 +103,7 @@ def _parse_state(text: str):
 def _parse_questions(text: str) -> list[str]:
     questions = [line.strip() for line in text.splitlines() if line.strip()]
     if not questions:
-        raise gr.Error("Enter at least one yes/no question (one per line).")
+        raise gr.Error("Enter at least one question (one per line).")
     if len(questions) > MAX_QUESTIONS:
         raise gr.Error(f"At most {MAX_QUESTIONS} questions per run.")
     return questions
@@ -278,6 +278,119 @@ def granite_nouls(state: str, questions: list[str]) -> tuple[list[Certainty], di
 
 
 # --------------------------------------------------------------------------- #
+# Granite Switch, thinking slow: free-form answers from the base model
+# --------------------------------------------------------------------------- #
+
+SLOW_MAX_TOKENS = 512
+
+
+def _slow_prompt(state: str, question: str) -> str:
+    # Same state-first layout as the fast prompt, so both modes share the
+    # cached state prefix on the endpoint.
+    return f"{state}\n\nAnswer the following question.\n{question}"
+
+
+@dataclass
+class SlowAnswer:
+    text: str = ""
+    done: bool = False
+    error: str = ""
+    first_token_s: float | None = None
+    prompt_tokens: int = 0
+    cached_tokens: int = 0
+    completion_tokens: int = 0
+
+
+def granite_answer(state: str, question: str, slot: SlowAnswer, t0: float) -> None:
+    """Stream the base model's answer (no adapter) into `slot`."""
+    try:
+        stream = client.chat.completions.create(
+            model=MODEL_ID,
+            messages=[{"role": "user", "content": _slow_prompt(state, question)}],
+            max_tokens=SLOW_MAX_TOKENS,
+            temperature=0.0,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                if slot.first_token_s is None:
+                    slot.first_token_s = time.perf_counter() - t0
+                slot.text += chunk.choices[0].delta.content
+            if chunk.usage:
+                slot.prompt_tokens = chunk.usage.prompt_tokens
+                slot.completion_tokens = chunk.usage.completion_tokens
+                details = chunk.usage.prompt_tokens_details
+                slot.cached_tokens = (details.cached_tokens or 0) if details else 0
+    except Exception as e:  # show the failure in that answer's cell
+        slot.error = str(e)
+    finally:
+        slot.done = True
+
+
+def _slow_rows(questions: list[str], slots: list[SlowAnswer]) -> list[list[str]]:
+    rows = []
+    for question, slot in zip(questions, slots):
+        if slot.error:
+            answer = f"(error: {slot.error})"
+        else:
+            answer = slot.text.strip() or ("…" if not slot.done else "(no answer)")
+        rows.append([question, "N/A", answer])
+    return rows
+
+
+def think_slow(state_text: str, questions: list[str]):
+    """Stream free-form answers: prime question 1, then fan out the rest.
+
+    The first question runs alone until its first token arrives, which means
+    the shared state prefix has been computed and cached. The others then go
+    out together, so vLLM batches them on that cached prefix.
+    """
+    wake_s = warmer.wait_ready()
+    slots = [SlowAnswer() for _ in questions]
+    t0 = time.perf_counter()
+
+    def start(i: int) -> None:
+        threading.Thread(
+            target=granite_answer, args=(state_text, questions[i], slots[i], t0), daemon=True
+        ).start()
+
+    start(0)
+    while slots[0].first_token_s is None and not slots[0].done:
+        time.sleep(0.02)
+    for i in range(1, len(questions)):
+        start(i)
+
+    jev_line = "**Jev:** N/A. Jev returns decisions only; it doesn't generate text."
+    while not all(s.done for s in slots):
+        yield _slow_rows(questions, slots), f"{jev_line}  \n**Granite Switch (thinking slow):** writing…"
+        time.sleep(0.25)
+    total_s = time.perf_counter() - t0
+    warmer.touch()
+
+    generated = sum(s.completion_tokens for s in slots)
+    rest = slots[1:]
+    rest_prompt = sum(s.prompt_tokens for s in rest)
+    rest_cached = sum(s.cached_tokens for s in rest)
+    cache_line = (
+        f" · answers 2–{len(slots)} reused {rest_cached} of {rest_prompt} prompt tokens "
+        f"from cache ({rest_cached / rest_prompt:.0%})"
+        if rest_prompt
+        else ""
+    )
+    first = f"{slots[0].first_token_s * 1000:.0f} ms" if slots[0].first_token_s else "n/a"
+    wake_note = f" · waited {wake_s:.0f} s for the endpoint to wake (not counted)" if wake_s > 5 else ""
+    timing = (
+        f"{jev_line}  \n"
+        f"**Granite Switch (thinking slow):** {total_s:.1f} s for {len(questions)} "
+        f"answer(s), {generated} tokens generated · first token {first} · `{MODEL_ID}` "
+        f"base model, same endpoint{wake_note}  \n"
+        f"Batching: question 1 first, the rest in parallel once its prefix was cached{cache_line}"
+    )
+    yield _slow_rows(questions, slots), timing
+
+
+# --------------------------------------------------------------------------- #
 # Jev (real API)
 # --------------------------------------------------------------------------- #
 
@@ -357,6 +470,41 @@ def compare(state_text: str, questions_text: str):
     return rows, timing, warmer.status()
 
 
+FAST_QUESTIONS_LABEL = f"Yes/no questions (one per line, up to {MAX_QUESTIONS})"
+SLOW_QUESTIONS_LABEL = f"Free-form questions (one per line, up to {MAX_QUESTIONS})"
+
+
+def think(mode: str, state_text: str, questions_text: str):
+    """Run the selected mode. Fast: nouls vs Jev. Slow: Granite writes answers."""
+    if mode == "fast":
+        rows, timing_md, status = compare(state_text, questions_text)
+        yield rows, gr.skip(), timing_md, status
+        return
+    if not state_text.strip():
+        raise gr.Error("Enter some state for the model to think about.")
+    questions = _parse_questions(questions_text)
+    for rows, timing_md in think_slow(state_text, questions):
+        yield gr.skip(), rows, timing_md, warmer.status()
+
+
+def set_mode(mode: str):
+    fast = mode == "fast"
+    return (
+        gr.update(
+            label=FAST_QUESTIONS_LABEL if fast else SLOW_QUESTIONS_LABEL,
+            placeholder="e.g. Is the customer asking for a refund?"
+            if fast
+            else "e.g. Summarize the customer's complaint in two sentences.",
+        ),
+        gr.update(value="Compare" if fast else "Think slow"),
+        gr.update(visible=fast),  # nouls table
+        gr.update(visible=not fast),  # answers table
+        gr.update(visible=fast),  # yes/no examples
+        gr.update(visible=not fast),  # free-form examples
+        "",  # clear the previous run's timing
+    )
+
+
 def on_page_load() -> str:
     """Start waking the endpoint as soon as someone opens the page."""
     warmer.ensure()
@@ -394,31 +542,53 @@ with gr.Blocks(title="Thinking Fast with Granite") as demo:
     )
     with gr.Row():
         with gr.Column():
+            mode = gr.Radio(
+                choices=[
+                    ("⚡ Fast: yes/no questions, nouls vs Jev", "fast"),
+                    ("🐢 Slow: free-form questions, Granite writes answers", "slow"),
+                ],
+                value="fast",
+                label="Thinking",
+            )
             state = gr.Textbox(
                 label="State (text or JSON)",
                 lines=6,
                 max_lines=18,
-                placeholder="The input the models decide about.",
+                placeholder="The input the models think about.",
             )
             questions = gr.Textbox(
-                label=f"Yes/no questions (one per line, up to {MAX_QUESTIONS})",
+                label=FAST_QUESTIONS_LABEL,
                 lines=5,
+                placeholder="e.g. Is the customer asking for a refund?",
             )
             run = gr.Button("Compare", variant="primary")
             endpoint_status = gr.Markdown(warmer.status())
         with gr.Column():
-            table = gr.Dataframe(
-                headers=[
-                    "Question",
-                    "Jev noul",
-                    "Granite noul",
-                ],
+            fast_table = gr.Dataframe(
+                headers=["Question", "Jev noul", "Granite noul"],
                 datatype=["str", "number", "number"],
                 interactive=False,
                 wrap=True,
             )
+            slow_table = gr.Dataframe(
+                headers=["Question", "Jev", "Granite answer"],
+                datatype=["str", "str", "str"],
+                column_widths=["22%", "8%", "70%"],
+                interactive=False,
+                wrap=True,
+                visible=False,
+            )
             timing = gr.Markdown()
-    gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
+    with gr.Column(visible=True) as fast_examples:
+        gr.Examples(
+            EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
+            label="Examples (yes/no)",
+        )
+    with gr.Column(visible=False) as slow_examples:
+        gr.Examples(
+            SLOW_EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
+            label="Examples (free-form)",
+        )
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
         "the noul is the probability-weighted average of those bins, so the "
@@ -426,7 +596,17 @@ with gr.Blocks(title="Thinking Fast with Granite") as demo:
         "trips. The Granite endpoint scales to zero after 15 idle minutes; opening "
         "this page starts waking it, and any wait isn't counted in Granite's time."
     )
-    run.click(compare, inputs=[state, questions], outputs=[table, timing, endpoint_status])
+    mode.change(
+        set_mode,
+        inputs=mode,
+        outputs=[questions, run, fast_table, slow_table, fast_examples, slow_examples, timing],
+        show_progress="hidden",
+    )
+    run.click(
+        think,
+        inputs=[mode, state, questions],
+        outputs=[fast_table, slow_table, timing, endpoint_status],
+    )
     # Wake on page load, and keep the status line current while it wakes.
     demo.load(on_page_load, outputs=endpoint_status, show_progress="hidden")
     gr.Timer(3).tick(warmer.status, outputs=endpoint_status, show_progress="hidden", queue=False)

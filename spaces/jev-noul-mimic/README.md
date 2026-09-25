@@ -109,6 +109,24 @@ The page reports vLLM's `cached_tokens` for the fan-out, so the reuse is
 visible. vLLM caches in 16-token blocks, so a state shorter than one block
 gets no reuse.
 
+## Thinking slow
+
+The **Thinking** toggle switches the page between two modes on the same state:
+
+- **⚡ Fast** (default): yes/no questions. Each gets a Jev noul and a Granite
+  noul, as described above.
+- **🐢 Slow**: free-form questions (summarize, draft a reply, what's still
+  open). Granite's base model, with no adapter, writes an answer to each,
+  streamed as it's generated. The Jev column shows **N/A**, because Jev returns
+  decisions only and doesn't generate text.
+
+Both modes hit the same endpoint and the same weights. The slow prompt keeps
+the state-first layout (`<state>`, then "Answer the following question.", then
+the question), so it shares the cached state prefix with fast mode. It batches
+the same way: question 1 runs alone until its first token arrives (so the
+prefix is cached), then the rest stream in parallel. Answers are capped at 512
+tokens.
+
 ## Warm start
 
 The endpoint scales to zero after 15 idle minutes (HF's minimum), and a cold
