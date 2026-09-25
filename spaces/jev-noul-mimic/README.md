@@ -115,10 +115,14 @@ The **Thinking** toggle switches the page between two modes on the same state:
 
 - **⚡ Fast** (default): yes/no questions. Each gets a Jev noul and a Granite
   noul, as described above.
-- **🐢 Slow**: free-form questions (summarize, draft a reply, what's still
-  open). Granite's base model, with no adapter, writes an answer to each,
-  streamed as it's generated. The Jev column shows **N/A**, because Jev returns
-  decisions only and doesn't generate text.
+- **🐢 Slow**: the same yes/no questions, or any free-form question you type.
+  Granite's base model, with no adapter, writes an answer to each, streamed as
+  it's generated, so you can read its reasoning next to the noul it gave in
+  fast mode. The Jev column shows **N/A**, because Jev returns decisions only
+  and doesn't generate text.
+
+All preset examples use yes/no questions, so the same example works in both
+modes.
 
 Both modes hit the same endpoint and the same weights. The slow prompt keeps
 the state-first layout (`<state>`, then "Answer the following question.", then

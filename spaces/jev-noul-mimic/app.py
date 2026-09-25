@@ -52,7 +52,7 @@ from huggingface_hub import hf_hub_download
 from openai import OpenAI
 from typesafe_sdk import Noul, TypeSafeClient, TypeSafeError
 
-from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS, SLOW_EXAMPLE_INPUTS
+from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS
 
 # Granite Switch endpoint (vLLM, OpenAI-compatible). HF_ENDPOINT_URL ends in /v1.
 ENDPOINT_URL = os.environ["HF_ENDPOINT_URL"].rstrip("/")
@@ -471,7 +471,7 @@ def compare(state_text: str, questions_text: str):
 
 
 FAST_QUESTIONS_LABEL = f"Yes/no questions (one per line, up to {MAX_QUESTIONS})"
-SLOW_QUESTIONS_LABEL = f"Free-form questions (one per line, up to {MAX_QUESTIONS})"
+SLOW_QUESTIONS_LABEL = f"Questions, yes/no or free-form (one per line, up to {MAX_QUESTIONS})"
 
 
 def _is_slow(mode: str) -> bool:
@@ -498,13 +498,11 @@ def set_mode(mode: str):
             label=FAST_QUESTIONS_LABEL if fast else SLOW_QUESTIONS_LABEL,
             placeholder="e.g. Is the customer asking for a refund?"
             if fast
-            else "e.g. Summarize the customer's complaint in two sentences.",
+            else "e.g. Is the customer asking for a refund? Or: What does the customer want?",
         ),
         gr.update(value="Compare" if fast else "Think slow"),
         gr.update(visible=fast),  # nouls table
         gr.update(visible=not fast),  # answers table
-        gr.update(visible=fast),  # yes/no examples
-        gr.update(visible=not fast),  # free-form examples
         "",  # clear the previous run's timing
     )
 
@@ -612,16 +610,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
                 visible=False,
             )
             timing = gr.Markdown()
-    with gr.Column(visible=True) as fast_examples:
-        gr.Examples(
-            EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
-            label="Examples (yes/no)",
-        )
-    with gr.Column(visible=False) as slow_examples:
-        gr.Examples(
-            SLOW_EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
-            label="Examples (free-form)",
-        )
+    gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
         "the noul is the probability-weighted average of those bins, so the "
@@ -632,7 +621,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
     mode.change(
         set_mode,
         inputs=mode,
-        outputs=[questions, run, fast_table, slow_table, fast_examples, slow_examples, timing],
+        outputs=[questions, run, fast_table, slow_table, timing],
         show_progress="hidden",
     )
     run.click(
