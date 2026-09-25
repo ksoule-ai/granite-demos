@@ -24,11 +24,11 @@ with a **noul**, the probability that the answer is yes.
 One open 3B model, Granite Switch, does both from a single endpoint, next to
 Jev (via [OpenRouter](https://openrouter.ai/typesafe)) on the same input:
 
-- **⚡ Thinking Fast:** a yes/no call as a noul, calculated from Granite's
-  one-token answer as P('yes')/(P('yes')+P('no'))
+- **⚡ Thinking Fast:** a yes/no call as a noul, similar in output to Jev's
+  System One decisions, calculated from Granite's one-token answer as
+  P('yes')/(P('yes')+P('no'))
 - **🐢 Thinking Slow:** a written answer plus Granite's certainty in it, built
-  with [Mellea](https://mellea.ai). Jev returns decisions only; it doesn't
-  generate text.
+  with [Mellea](https://mellea.ai).
 
 Granite Switch is served by vLLM on **a single NVIDIA L4 GPU (24 GB)**, on a
 Hugging Face Inference Endpoint. Both modes run on that one GPU.
