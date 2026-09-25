@@ -9,13 +9,15 @@ This Space mimics that primitive with Granite Switch served by vLLM on a
 Hugging Face Inference Endpoint, without ever asking Granite for its own
 answer:
 
-1. Prefill the assistant turn with "Yes." and run Granite Switch's embedded
-   ``uncertainty`` adapter on it.
-2. Its certainty that "Yes." is correct, c(yes), is P(yes): the noul.
+1. Ask with "Reply with exactly one word, 'Yes' or 'No'.", then run Granite
+   Switch's embedded ``uncertainty`` adapter twice: on a prefilled "Yes"
+   (c(yes)) and on a prefilled "No" (c(no)).
+2. The noul is c(yes) / (c(yes) + c(no)). Normalizing by c(no), which tracks
+   the adapter's per-input drift, puts the yes/no boundary back at 0.5.
 
 The adapter call is the conversation Mellea's ``check_certainty`` sends, trimmed
 so vLLM generates one token (the score digit) instead of the full JSON reply;
-see ``granite_noul``.
+see ``_certainty``.
 
 The same state and questions go to the real Jev model via OpenRouter (nouls
 only), and the two sets of numbers are shown side by side.
@@ -28,11 +30,12 @@ is an aLoRA: it only activates at its invocation token, so it reads the base
 model's KV cache for everything before that. vLLM's prefix cache can then
 compute the state once and reuse it for every question:
 
-1. **Prime:** send the first question alone. vLLM computes and caches the
+1. **Prime:** send question 1's "Yes" call alone. vLLM computes and caches the
    shared prefix. (Requests scheduled in the same step can't share blocks
    that are still being computed, so priming beats sending everything at once.)
-2. **Fan out:** send the remaining questions concurrently. vLLM batches them,
-   and each prefills only its own question plus the "Yes." turn.
+2. **Fan out:** send the other 2N - 1 adapter calls ("Yes" and "No" for every
+   question) concurrently. vLLM batches them, and each prefills only its own
+   question plus the prefilled answer.
 
 vLLM's ``cached_tokens`` usage is reported so the cache hits are visible.
 """
@@ -97,9 +100,12 @@ SCORE_PREFIX = '{"' + _likelihood["input_path"][0] + '": "'
 TOP_LOGPROBS = 10  # same as Mellea's likelihood decoding
 
 
+FAST_INSTRUCTION = "Reply with exactly one word, 'Yes' or 'No'."
+
+
 def _question_prompt(state: str, question: str) -> str:
     # Shared state + instruction first so every question reuses one cached prefix.
-    return f"{state}\n\nAnswer the following question with 'yes' or 'no'.\n{question}"
+    return f"{state}\n\n{FAST_INSTRUCTION}\n{question}"
 
 
 def _parse_state(text: str):
@@ -127,8 +133,10 @@ def _parse_questions(text: str) -> list[str]:
 
 @dataclass
 class Certainty:
-    noul: float
-    prompt_tokens: int
+    noul: float  # c(yes) / (c(yes) + c(no))
+    c_yes: float
+    c_no: float
+    prompt_tokens: int  # summed over both adapter calls
     cached_tokens: int
 
 
@@ -221,22 +229,24 @@ class EndpointWarmer:
 warmer = EndpointWarmer()
 
 
-def granite_noul(state: str, question: str) -> Certainty:
-    """c(yes) for one question: the uncertainty adapter on a prefilled "Yes."
+def _certainty(state: str, question: str, answer: str) -> tuple[float, int, int]:
+    """One uncertainty-adapter call: its certainty that `answer` is correct.
 
-    Same conversation Mellea's ``check_certainty`` sends (question, "Yes.",
+    Same conversation Mellea's ``check_certainty`` sends (question, answer,
     then the ``<certainty>`` invocation), with one change: the adapter's reply
     is prefilled up to the score digit and continued, so vLLM generates a
     single token instead of the full ``{"score": "N"}`` (7 tokens). The
-    certainty is then decoded from that token's top logprobs the way Mellea's
+    certainty is decoded from that token's top logprobs the way Mellea's
     likelihood rule does it: keep the digit candidates, renormalize, and take
     the expected value of their mapped certainties.
+
+    Returns (certainty, prompt_tokens, cached_tokens).
     """
     response = client.chat.completions.create(
         model=MODEL_ID,
         messages=[
             {"role": "user", "content": _question_prompt(state, question)},
-            {"role": "assistant", "content": "Yes."},
+            {"role": "assistant", "content": answer},
             {"role": "user", "content": UNCERTAINTY_INVOCATION},
             {"role": "assistant", "content": SCORE_PREFIX},
         ],
@@ -264,28 +274,55 @@ def granite_noul(state: str, question: str) -> Certainty:
     total = sum(p for _, p in weighted)
     usage = response.usage
     details = usage.prompt_tokens_details if usage else None
-    return Certainty(
-        noul=sum(v * p for v, p in weighted) / total,
-        prompt_tokens=usage.prompt_tokens if usage else 0,
-        cached_tokens=(details.cached_tokens or 0) if details else 0,
+    return (
+        sum(v * p for v, p in weighted) / total,
+        usage.prompt_tokens if usage else 0,
+        (details.cached_tokens or 0) if details else 0,
     )
 
 
-def granite_nouls(state: str, questions: list[str]) -> tuple[list[Certainty], dict]:
-    """Prime the shared prefix with one question, then fan out the rest.
+def _combine(yes: tuple[float, int, int], no: tuple[float, int, int]) -> Certainty:
+    """noul = c(yes) / (c(yes) + c(no)).
 
-    The fan-out threads share one OpenAI client (one HTTP connection pool), so
-    their requests reach vLLM together and it batches them.
+    The adapter's certainty drifts from one input to another, so c(yes) alone
+    has no fixed yes/no boundary. c(no) on the same input barely depends on
+    the true answer but tracks that drift, so dividing by c(yes) + c(no)
+    cancels it and puts the boundary back at 0.5.
+    """
+    c_yes, c_no = yes[0], no[0]
+    return Certainty(
+        noul=c_yes / (c_yes + c_no),
+        c_yes=c_yes,
+        c_no=c_no,
+        prompt_tokens=yes[1] + no[1],
+        cached_tokens=yes[2] + no[2],
+    )
+
+
+def granite_noul(state: str, question: str) -> Certainty:
+    """One question's noul: the adapter on a prefilled "Yes", then on "No"."""
+    return _combine(_certainty(state, question, "Yes"), _certainty(state, question, "No"))
+
+
+def granite_nouls(state: str, questions: list[str]) -> tuple[list[Certainty], dict]:
+    """Prime the shared prefix with one call, then fan out every other call.
+
+    Each question needs two adapter calls (prefilled "Yes" and "No"). Question
+    1's "Yes" call runs alone to cache the shared state; the remaining 2N - 1
+    calls then go out together from threads sharing one OpenAI client (one
+    HTTP connection pool), so vLLM batches them on the cached prefix.
     """
     t0 = time.perf_counter()
-    first = granite_noul(state, questions[0])
+    first_yes = _certainty(state, questions[0], "Yes")
     t1 = time.perf_counter()
-    rest: list[Certainty] = []
-    if len(questions) > 1:
-        with ThreadPoolExecutor(max_workers=len(questions) - 1) as pool:
-            rest = list(pool.map(lambda q: granite_noul(state, q), questions[1:]))
+    calls = [(questions[0], "No")] + [(q, a) for q in questions[1:] for a in ("Yes", "No")]
+    with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+        results = list(pool.map(lambda qa: _certainty(state, *qa), calls))
     t2 = time.perf_counter()
-    return [first, *rest], {"prime_s": t1 - t0, "fanout_s": t2 - t1, "total_s": t2 - t0}
+    nouls = [_combine(first_yes, results[0])]
+    for i in range(1, len(questions)):
+        nouls.append(_combine(results[2 * i - 1], results[2 * i]))
+    return nouls, {"prime_s": t1 - t0, "fanout_s": t2 - t1, "total_s": t2 - t0, "fanout_calls": len(calls)}
 
 
 # --------------------------------------------------------------------------- #
@@ -579,8 +616,8 @@ def compare(state_text: str, questions_text: str):
     fanout_prompt = sum(g.prompt_tokens for g in fanout)
     fanout_cached = sum(g.cached_tokens for g in fanout)
     cache_line = (
-        f"fan-out reused {fanout_cached} of {fanout_prompt} prompt tokens from cache "
-        f"({fanout_cached / fanout_prompt:.0%})"
+        f"questions 2–{len(questions)} reused {fanout_cached} of {fanout_prompt} prompt "
+        f"tokens from cache ({fanout_cached / fanout_prompt:.0%})"
         if fanout_prompt
         else "single question, nothing to share"
     )
@@ -588,8 +625,8 @@ def compare(state_text: str, questions_text: str):
     timing = (
         f"**Granite Switch:** {g_time['total_s'] * 1000:.0f} ms end to end "
         f"for {len(questions)} question(s) · `{MODEL_ID}` on vLLM, {GRANITE_HARDWARE}{wake_note}  \n"
-        f"Batching: prime 1 question {g_time['prime_s'] * 1000:.0f} ms "
-        f"({granite[0].prompt_tokens} prompt tokens), then {len(fanout)} in parallel "
+        f"Batching: 2 adapter calls per question (prefilled Yes, prefilled No) · prime 1 call "
+        f"{g_time['prime_s'] * 1000:.0f} ms, then {g_time['fanout_calls']} in parallel "
         f"{g_time['fanout_s'] * 1000:.0f} ms · {cache_line}"
     )
     jev_ms = jev_s * 1000 if jev is not None else None
@@ -604,8 +641,8 @@ QUESTIONS_INFO = (
 
 
 OUTPUT_HEADERS = {
-    "fast": "### ⚡ Thinking Fast\nGranite Switch nouls: the uncertainty adapter's P(yes) "
-    "for each question, one generated token each.",
+    "fast": "### ⚡ Thinking Fast\nGranite Switch nouls: the uncertainty adapter's "
+    "c(yes) / (c(yes) + c(no)) for each question, from two one-token adapter calls.",
     "slow": "### 🐢 Thinking Slow\nGranite Switch's base model writes an answer to each question.",
     "compound": "### 🧠 Compound Thinking\nGranite Switch writes each answer, then scores its "
     "certainty in it. Built with Mellea.",
@@ -729,8 +766,8 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "[Jev](https://docs.typesafe.ai): instead of text, Jev answers a yes/no "
         "question with a **noul**, the probability that the answer is yes.\n\n"
         "One open 3B model, Granite Switch, does both from a single endpoint:\n"
-        "- **⚡ Thinking Fast:** a yes/no call as a noul, one generated token per "
-        "question, side by side with Jev.\n"
+        "- **⚡ Thinking Fast:** a yes/no call as a noul, from two one-token "
+        "adapter calls per question, side by side with Jev.\n"
         "- **🐢 Thinking Slow:** a written answer, like any LLM. Jev returns "
         "decisions only; it doesn't generate text.\n"
         "- **🧠 Compound Thinking:** a written answer plus Granite's certainty in "
@@ -744,8 +781,9 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "[Adapter catalog](https://generative-computing.github.io/granite-switch/adapter_catalog.html)\n"
         "- **Uncertainty quantification (UQ) adapter.** A calibrated adapter that "
         "scores how likely an answer is to be correct: of the answers it scores at "
-        "X%, about X% are right. Score a prefilled \"Yes.\" and you get a noul; "
-        "score Granite's own answer and you get Compound Thinking. "
+        "X%, about X% are right. Score a prefilled \"Yes\" and a prefilled \"No\", "
+        "and c(yes) / (c(yes) + c(no)) is a noul; score Granite's own written "
+        "answer and you get Compound Thinking. "
         "[Adapter README](https://huggingface.co/ibm-granite/granitelib-core-r1.0/blob/main/uncertainty/README.md)\n"
         "- **aLoRA (activated LoRA).** Adapters that switch on at a trigger token "
         "and reuse the base model's KV cache for everything before it, so Granite "

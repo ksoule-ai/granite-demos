@@ -24,8 +24,8 @@ with a **noul**, the probability that the answer is yes.
 One open 3B model, Granite Switch, does both from a single endpoint, next to
 Jev (via [OpenRouter](https://openrouter.ai/typesafe)) on the same input:
 
-- **⚡ Thinking Fast:** a yes/no call as a noul, one generated token per
-  question, side by side with Jev.
+- **⚡ Thinking Fast:** a yes/no call as a noul, from two one-token adapter
+  calls per question, side by side with Jev.
 - **🐢 Thinking Slow:** a written answer, like any LLM. Jev returns decisions
   only; it doesn't generate text.
 - **🧠 Compound Thinking:** a written answer plus Granite's certainty in it,
@@ -44,8 +44,9 @@ Hugging Face Inference Endpoint. All three modes run on that one GPU.
   [Adapter catalog](https://generative-computing.github.io/granite-switch/adapter_catalog.html)
 - **Uncertainty quantification (UQ) adapter.** A calibrated adapter that scores
   how likely an answer is to be correct: of the answers it scores at X%, about
-  X% are right. Score a prefilled "Yes." and you get a noul; score Granite's
-  own answer and you get Compound Thinking.
+  X% are right. Score a prefilled "Yes" and a prefilled "No", and
+  c(yes) / (c(yes) + c(no)) is a noul; score Granite's own written answer and
+  you get Compound Thinking.
   [Adapter README](https://huggingface.co/ibm-granite/granitelib-core-r1.0/blob/main/uncertainty/README.md)
 - **aLoRA (activated LoRA).** Adapters that switch on at a trigger token and
   reuse the base model's KV cache for everything before it, so Granite reads the
@@ -66,16 +67,39 @@ Granite Switch runs on vLLM on a Hugging Face Inference Endpoint (see the
 how that endpoint is built). The Space calls it with the OpenAI client and
 selects the embedded adapter by name through `chat_template_kwargs`.
 
-Granite never answers the question itself. For each question it makes one
-call: the assistant turn is prefilled with "Yes." and Granite Switch's
-embedded `uncertainty` adapter scores it. That certainty, c(yes), is the
-probability of yes, which is the noul.
+Granite never answers the question itself. The prompt ends with the
+instruction "Reply with exactly one word, 'Yes' or 'No'.", and for each
+question Granite Switch's embedded `uncertainty` adapter runs twice:
 
-The adapter scores ten bins (0.05, 0.15, … 0.95) for how likely the
-prefilled answer is to be correct, and the noul is the probability-weighted
-average of those bins, so it always falls between 0.05 and 0.95.
+1. On a prefilled **"Yes"**: c(yes), its certainty that yes is correct.
+2. On a prefilled **"No"**: c(no), its certainty that no is correct.
 
-## One generated token per question
+The noul is **c(yes) / (c(yes) + c(no))**.
+
+Why normalize: the adapter's certainty drifts from one input to another, so
+c(yes) alone has no fixed yes/no boundary, and a single global rescaling
+fitted on one set of inputs made others worse. c(no) on the same input barely
+depends on the true answer, but it tracks that drift, so dividing by
+c(yes) + c(no) cancels it and puts the boundary back at 0.5.
+
+The adapter scores ten bins (0.05, 0.15, … 0.95) for how likely a prefilled
+answer is to be correct, and each certainty is the probability-weighted average
+of those bins, so c(yes), c(no) and the noul all fall between 0.05 and 0.95.
+
+**How it compares** on 82 hand-labeled questions across all seven examples
+(scored at a 0.5 cutoff; AUC = how well the scores rank yes above no):
+
+| Granite noul | Correct | AUC |
+|---|---|---|
+| c(yes) alone, prefilled "Yes." (earlier version) | 52/82 | 0.83 |
+| **c(yes) / (c(yes) + c(no))** (this demo) | **74/82** | **0.93** |
+| Jev (reference) | 82/82 | 1.00 |
+
+The normalized noul gets the direction right far more often, but its values
+stay fairly close to 0.5, so read them as a ranking and a lean rather than as
+sharply calibrated probabilities.
+
+## One generated token per adapter call
 
 The adapter always replies `{"score": "N"}`, where the digit N is the only
 part that carries information. That reply is 7 tokens, and on an L4 each
@@ -111,12 +135,12 @@ The uncertainty adapter is an aLoRA: it activates only at its invocation
 token and reads the base model's KV cache for everything before it. That lets
 vLLM's prefix cache compute the state once and reuse it for every question:
 
-1. **Prime.** The first question goes alone, so vLLM computes and caches the
-   shared prefix. Requests scheduled in the same step can't share blocks that
-   are still being computed, so priming beats sending everything at once.
-2. **Fan out.** The remaining questions go concurrently (one thread each,
-   sharing one OpenAI client). vLLM batches them, and each only reads its own
-   question and the "Yes." turn.
+1. **Prime.** Question 1's "Yes" call goes alone, so vLLM computes and caches
+   the shared prefix. Requests scheduled in the same step can't share blocks
+   that are still being computed, so priming beats sending everything at once.
+2. **Fan out.** The other 2N − 1 adapter calls (the rest of the "Yes" and "No"
+   calls) go concurrently, one thread each, sharing one OpenAI client. vLLM
+   batches them, and each only reads its own question and prefilled answer.
 
 The page reports vLLM's `cached_tokens` for the fan-out, so the reuse is
 visible. vLLM caches in 16-token blocks, so a state shorter than one block
@@ -160,7 +184,7 @@ through `OpenAIBackend(load_embedded_adapters=True)`. For each question:
 1. `mfuncs.chat` runs the slow prompt (state, then question) on the base model
    and returns a `ChatContext` holding the question and Granite's answer.
 2. `core.check_certainty` runs the UQ adapter on that context: the model's
-   certainty that *its own answer* is correct (not a prefilled "Yes.").
+   certainty that *its own answer* is correct (not a prefilled "Yes" or "No").
 3. The result is a Pydantic `CompoundAnswer`, and the page returns the whole
    response as JSON:
 
