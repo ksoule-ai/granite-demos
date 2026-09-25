@@ -1,6 +1,6 @@
 ---
-title: Granite Switch nouls vs Jev
-emoji: ⚖️
+title: Thinking Fast with Granite
+emoji: ⚡
 colorFrom: blue
 colorTo: indigo
 sdk: gradio
@@ -11,18 +11,20 @@ pinned: false
 license: apache-2.0
 models:
   - ibm-granite/granite-switch-4.1-3b-preview
-short_description: Open-model nouls (Granite Switch) next to Jev's
+short_description: System One yes/no calls from an open model, next to Jev
 ---
 
-# Granite Switch nouls vs. Jev
+# Thinking Fast with Granite
 
-[Jev](https://docs.typesafe.ai) is TypeSafe AI's *System One* model. A **noul** is
-its yes/no primitive: one calibrated number in [0, 1], the probability that the
-answer is yes.
+Some decisions don't need reasoning out loud. They need a fast, calibrated gut
+call. That's the idea behind *System One* models like TypeSafe AI's
+[Jev](https://docs.typesafe.ai): instead of text, Jev answers a yes/no question
+with a **noul**, the probability that the answer is yes.
 
-This Space rebuilds that primitive from open parts and shows it next to the real
-Jev model, called through [OpenRouter](https://openrouter.ai/typesafe), on the
-same input.
+This Space gets the same kind of answer from an open 3B model,
+[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview),
+using one generated token per question, and puts it next to Jev (via
+[OpenRouter](https://openrouter.ai/typesafe)) on the same input.
 
 ## How the Granite side produces a noul
 

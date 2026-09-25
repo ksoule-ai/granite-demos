@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Granite Switch vs. Jev: side-by-side nouls.
+"""Thinking Fast with Granite: Granite Switch vs. Jev, side-by-side nouls.
 
 Jev (TypeSafe AI's "System One" model) answers yes/no questions about a
 piece of state with a *noul*: one calibrated number in [0, 1], the
@@ -363,14 +363,17 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
+with gr.Blocks(title="Thinking Fast with Granite") as demo:
     gr.Markdown(
-        "# Granite Switch nouls vs. Jev\n"
-        "[Jev](https://docs.typesafe.ai) is TypeSafe AI's *System One* model. A "
-        "**noul** is its yes/no primitive: one calibrated probability that the "
-        "answer is yes. This Space rebuilds that primitive with an open model, "
+        "# ⚡ Thinking Fast with Granite\n"
+        "Some decisions don't need reasoning out loud. They need a fast, calibrated "
+        "gut call. That's the idea behind *System One* models like TypeSafe AI's "
+        "[Jev](https://docs.typesafe.ai): instead of text, Jev answers a yes/no "
+        "question with a **noul**, the probability that the answer is yes.\n\n"
+        "Here, an open 3B model, "
         "[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview), "
-        "and compares the two on the same input.\n\n"
+        "makes the same kind of call in one generated token. Give both models the "
+        "same input and questions and compare.\n\n"
         "**How the Granite side works:** Granite never answers the question itself. "
         "Instead, the answer is prefilled as \"Yes.\" and Granite Switch's embedded "
         "`uncertainty` adapter scores it. The adapter's certainty that yes is "
