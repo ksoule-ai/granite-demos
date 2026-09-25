@@ -150,18 +150,23 @@ gets no reuse.
 Two buttons under the questions each start a different kind of thinking on the
 same state, straight away: **⚡ Thinking Fast** and **🐢 Thinking Slow**. The
 results panel switches to match, under a header naming the kind of thinking
-that ran. Large tiles under the header show the end-to-end time: Granite's,
-plus Jev's (light grey) in Thinking Fast, side by side so the two are easy to
-compare.
+that ran. Large tiles under the header show the end-to-end times (Granite's,
+and Jev's in light grey) side by side, plus **agreement with Jev**: of the
+questions Jev calls yes (noul > 0.5), how many Granite also calls yes, and the
+same for no. Granite's yes/no is its noul > 0.5 in Thinking Fast, and the
+opening "Yes"/"No" of its written response in Thinking Slow; responses without
+a clear yes or no are left out of the count and noted on the tile.
 
 - **⚡ Thinking Fast**: yes/no questions. One table shows Granite's noul and,
   in a **Jev noul (reference)** column, Jev's. Everything Jev (that column, its
   end-to-end tile and its timing line) is light grey, so it reads as the
   comparison baseline rather than part of the Granite stack.
 - **🐢 Thinking Slow**: the same yes/no questions, or any free-form question
-  you type. Granite writes an answer, then scores its own certainty in it
-  (below). Jev isn't shown here: it returns decisions only and doesn't
-  generate text.
+  you type. Granite writes a response, then scores its own certainty in it
+  (below). The table shows **Question | Granite response | Certainty | Jev
+  noul (reference)**; Jev answers the same questions in parallel as a grey
+  reference column, since it returns decisions only and doesn't generate
+  text. The full JSON is under a collapsed **Raw JSON** section.
 
 All preset examples use yes/no questions, so the same example works with both
 buttons.
