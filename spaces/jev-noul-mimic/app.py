@@ -394,7 +394,7 @@ def think_slow(state_text: str, questions: list[str]):
         f"{jev_line}  \n"
         f"**Granite Switch (thinking slow):** {total_s:.1f} s for {len(questions)} "
         f"answer(s), {generated} tokens generated · first token {first} · `{MODEL_ID}` "
-        f"base model, same endpoint ({GRANITE_HARDWARE}){wake_note}  \n"
+        f"base model, same endpoint, on {GRANITE_HARDWARE}{wake_note}  \n"
         f"Batching: question 1 first, the rest in parallel once its prefix was cached{cache_line}"
     )
     yield _slow_rows(questions, slots), timing
@@ -501,7 +501,7 @@ def think_compound(state_text: str, questions: list[str]):
     timing = (
         f"{jev_line}  \n"
         f"**Granite Switch (Compound Thinking, Mellea):** {total_s:.1f} s for "
-        f"{len(questions)} question(s) · `{MODEL_ID}`, same endpoint ({GRANITE_HARDWARE}){wake_note}  \n"
+        f"{len(questions)} question(s) · `{MODEL_ID}`, same endpoint, on {GRANITE_HARDWARE}{wake_note}  \n"
         f"Prefill of the shared state {prefill_s * 1000:.0f} ms, then all questions in "
         f"parallel · per question: answer {max(answer_s):.1f} s max, certainty "
         f"{sum(certainty_s) / len(certainty_s) * 1000:.0f} ms avg (aLoRA on the cached answer)"
