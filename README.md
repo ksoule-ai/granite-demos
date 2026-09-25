@@ -42,13 +42,21 @@ The image is just stock vLLM plus the `granite-switch` package. See
 ```dockerfile
 FROM vllm/vllm-openai:v0.19.1
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+ARG GRANITE_SWITCH_REF=756f946640d571a5beef2a49d4cab6614c61f18a
 RUN git clone https://github.com/generative-computing/granite-switch.git /opt/granite-switch \
+ && git -C /opt/granite-switch checkout "$GRANITE_SWITCH_REF" \
  && pip install "/opt/granite-switch[vllm]"
 ```
 
 **Version note:** the `[vllm]` extra pins **vLLM 0.19.1** (CUDA 12.x), which matches
 HF's L4 hosts. The `[vllm20]` extra needs **CUDA 13+**, which those hosts don't have
 — don't use it here.
+
+**Pin note:** the clone is pinned to granite-switch commit `756f946`. Commit
+`6013c7f` (2026-09-10) dropped the SingleSwitch format that the
+`granite-switch-4.1-3b-preview` checkpoint uses. The package version didn't change,
+so an unpinned build fails at endpoint startup with a SingleSwitch/MultiSwitch
+error. Move the pin forward only once you're serving a MultiSwitch checkpoint.
 
 **Build with GitHub Actions, not locally.** A Mac builds `arm64`, which Inference
 Endpoints rejects (it requires `linux/amd64`). GitHub's runners are `x86`, so the
