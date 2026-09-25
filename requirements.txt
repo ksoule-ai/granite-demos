@@ -1,2 +1,21 @@
 openai>=1.40.0
 python-dotenv>=1.0.0
+
+# Gradio Space / ZeroGPU
+gradio>=6.0,<7
+spaces
+torch
+accelerate>=1.9.0
+granite-switch[hf]
+transformers>=5.5.1,<5.10
+
+# Mellea drives all generation (base turns, the IVR loop, adapter judging).
+# Installed WITHOUT the [hf] extra on purpose: mellea 0.6.0's hf extra pins
+# transformers<5, which conflicts with granite-switch's >=5.5.1 requirement
+# (mellea's HF code handles transformers 5; the pin is just conservative —
+# switch_backend.py normalizes the one real difference, apply_chat_template's
+# BatchEncoding return). The pieces of the extra the HF backend needs at
+# inference time are listed explicitly instead.
+mellea==0.6.0
+llguidance
+xgrammar==0.1.33

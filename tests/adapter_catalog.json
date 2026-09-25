@@ -1,0 +1,17 @@
+{
+  "_provenance": "Scraped 2026-07-09 from https://github.com/generative-computing/granite-switch/blob/main/docs/adapter_catalog.html (rendered at https://generative-computing.github.io/granite-switch/adapter_catalog.html). Names are exact adapter_name strings for tokenizer.apply_chat_template. Note the inconsistent hyphen/underscore usage — it is intentional and matches the upstream catalog.",
+  "adapters": {
+    "query_rewrite": {"library": "rag", "needs_documents": false},
+    "query_clarification": {"library": "rag", "needs_documents": false},
+    "answerability": {"library": "rag", "needs_documents": true},
+    "hallucination_detection": {"library": "rag", "needs_documents": true},
+    "citations": {"library": "rag", "needs_documents": true},
+    "context-attribution": {"library": "core", "needs_documents": true},
+    "requirement-check": {"library": "core", "needs_documents": false, "needs_requirements": true},
+    "uncertainty": {"library": "core", "needs_documents": false},
+    "guardian-core": {"library": "guardian", "needs_documents": false},
+    "factuality-detection": {"library": "guardian", "needs_documents": true},
+    "factuality-correction": {"library": "guardian", "needs_documents": true},
+    "policy-guardrails": {"library": "guardian", "needs_documents": false}
+  }
+}
