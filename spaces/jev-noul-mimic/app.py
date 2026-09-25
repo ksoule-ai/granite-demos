@@ -63,7 +63,7 @@ backend = LocalHFBackend(
 
 
 def _question_prompt(state: str, question: str) -> str:
-    return f"{state}\n\nQuestion: {question}\nAnswer yes or no."
+    return f"Answer the following question with 'yes' or 'no'.\n{question}\n\n{state}"
 
 
 def _parse_state(text: str):
