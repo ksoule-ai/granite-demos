@@ -53,6 +53,8 @@ from mellea.stdlib.components.intrinsic.intrinsic import Intrinsic
 from mellea.stdlib.context import ChatContext
 from typesafe_sdk import Noul, TypeSafeClient, TypeSafeError
 
+from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS
+
 # Granite Switch endpoint (vLLM, OpenAI-compatible). HF_ENDPOINT_URL ends in /v1.
 ENDPOINT_URL = os.environ["HF_ENDPOINT_URL"].rstrip("/")
 HF_TOKEN = os.environ["HF_TOKEN"]
@@ -338,27 +340,6 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-EXAMPLES = [
-    [
-        "I was charged twice for my subscription this month and nobody has "
-        "answered my last two emails. Please fix this today or cancel my account.",
-        "Is this about billing?\nIs the customer angry?\n"
-        "Does the customer want a refund?\nIs this a bug report?",
-    ],
-    [
-        '{"order_id": "A-1042", "status": "delivered", "delivered_at": '
-        '"2026-09-20", "customer_message": "The box arrived crushed and the '
-        'mug inside is in pieces."}',
-        "Was the item damaged?\nHas the order been delivered?\n"
-        "Is the customer asking to change the shipping address?",
-    ],
-    [
-        "The Eiffel Tower was completed in 1889 and is located in Berlin.",
-        "Is this statement entirely accurate?\nDoes the statement mention a year?\n"
-        "Is the Eiffel Tower in France?",
-    ],
-]
-
 with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
     gr.Markdown(
         "# Granite Switch nouls vs. Jev\n"
@@ -377,6 +358,7 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
             state = gr.Textbox(
                 label="State (text or JSON)",
                 lines=6,
+                max_lines=18,
                 placeholder="The input the models decide about.",
             )
             questions = gr.Textbox(
@@ -397,7 +379,7 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
                 wrap=True,
             )
             timing = gr.Markdown()
-    gr.Examples(EXAMPLES, inputs=[state, questions])
+    gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
         "Mellea returns the probability-weighted average of those bins, so the "
