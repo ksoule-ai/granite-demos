@@ -131,6 +131,35 @@ the same way: question 1 runs alone until its first token arrives (so the
 prefix is cached), then the rest stream in parallel. Answers are capped at 512
 tokens.
 
+## Compound thinking
+
+**🧠 Compound** combines the two: Granite thinks slow, then scores its own
+answer. It's built with [Mellea](https://mellea.ai), driving the same endpoint
+through `OpenAIBackend(load_embedded_adapters=True)`. For each question:
+
+1. `mfuncs.chat` runs the slow prompt (state, then question) on the base model
+   and returns a `ChatContext` holding the question and Granite's answer.
+2. `core.check_certainty` runs the UQ adapter on that context: the model's
+   certainty that *its own answer* is correct (not a prefilled "Yes.").
+3. The result is a Pydantic `CompoundAnswer`, and the page returns the whole
+   response as JSON:
+
+```json
+{
+  "mode": "compound",
+  "model": "ibm-granite/granite-switch-4.1-3b-preview",
+  "results": [
+    {"question": "…", "answer": "…", "certainty": 0.83}
+  ]
+}
+```
+
+The certainty call is cheap because the adapter is an aLoRA. It reuses the KV
+cache for the question *and* the answer, and only generates the score.
+Mellea's chat call isn't streamed here, so instead of priming on question 1's
+first token, a 1-token Mellea call caches the shared state prefix first. Then
+every question runs in parallel, and the JSON fills in as each one finishes.
+
 ## Warm start
 
 The endpoint scales to zero after 15 idle minutes (HF's minimum), and a cold

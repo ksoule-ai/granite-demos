@@ -50,7 +50,15 @@ import httpx
 import yaml
 from huggingface_hub import hf_hub_download
 from openai import OpenAI
+from pydantic import BaseModel
 from typesafe_sdk import Noul, TypeSafeClient, TypeSafeError
+
+from mellea import ModelOption
+from mellea.backends.openai import OpenAIBackend
+from mellea.formatters import TemplateFormatter
+from mellea.stdlib import functional as mfuncs
+from mellea.stdlib.components.intrinsic import core
+from mellea.stdlib.context import ChatContext
 
 from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS
 
@@ -391,6 +399,115 @@ def think_slow(state_text: str, questions: list[str]):
 
 
 # --------------------------------------------------------------------------- #
+# Granite Switch, compound thinking (Mellea): think slow, then score certainty
+# --------------------------------------------------------------------------- #
+
+# Mellea drives the same endpoint. load_embedded_adapters registers Granite
+# Switch's embedded adapters (only their I/O configs are fetched; the weights
+# are already in the served model), so core.check_certainty can call the
+# uncertainty adapter by name.
+mellea_backend = OpenAIBackend(
+    model_id=MODEL_ID,
+    formatter=TemplateFormatter(model_id=MODEL_ID),
+    base_url=ENDPOINT_URL,
+    api_key=HF_TOKEN,
+    load_embedded_adapters=True,
+)
+COMPOUND_OPTIONS = {ModelOption.TEMPERATURE: 0.0, ModelOption.MAX_NEW_TOKENS: SLOW_MAX_TOKENS}
+
+
+class CompoundAnswer(BaseModel):
+    """One compound-thinking result: the written answer plus its certainty."""
+
+    question: str
+    answer: str
+    certainty: float
+
+
+def compound_answer(state: str, question: str) -> tuple[CompoundAnswer, float, float]:
+    """Think slow, then score the answer. Returns (result, answer_s, certainty_s).
+
+    mfuncs.chat returns the context with both the question and the model's
+    answer in it, which is exactly what check_certainty scores. The adapter is
+    an aLoRA, so this second call reuses the KV cache for the question *and*
+    the answer and only has to generate the score.
+    """
+    t0 = time.perf_counter()
+    reply, ctx = mfuncs.chat(
+        _slow_prompt(state, question), ChatContext(), mellea_backend, model_options=COMPOUND_OPTIONS
+    )
+    t1 = time.perf_counter()
+    certainty = core.check_certainty(ctx, mellea_backend)
+    t2 = time.perf_counter()
+    result = CompoundAnswer(question=question, answer=reply.content.strip(), certainty=round(certainty, 3))
+    return result, t1 - t0, t2 - t1
+
+
+def _compound_json(questions: list[str], results: list[CompoundAnswer | None]) -> dict:
+    return {
+        "mode": "compound",
+        "model": MODEL_ID,
+        "results": [
+            r.model_dump() if r else {"question": q, "answer": None, "certainty": None}
+            for q, r in zip(questions, results)
+        ],
+    }
+
+
+def think_compound(state_text: str, questions: list[str]):
+    """Prefill the shared state once, then run every question in parallel.
+
+    Mellea's chat call isn't streamed here, so instead of waiting for question
+    1's first token (as slow mode does), a 1-token Mellea call caches the
+    state prefix. All questions then go out together and vLLM batches them.
+    Results fill into the JSON as each question finishes.
+    """
+    wake_s = warmer.wait_ready()
+    t0 = time.perf_counter()
+    mfuncs.chat(
+        _slow_prompt(state_text, questions[0]),
+        ChatContext(),
+        mellea_backend,
+        model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.MAX_NEW_TOKENS: 1},
+    )
+    prefill_s = time.perf_counter() - t0
+
+    results: list[CompoundAnswer | None] = [None] * len(questions)
+    answer_s, certainty_s = [], []
+    jev_line = "**Jev:** N/A. Jev returns decisions only; it doesn't generate text."
+    with ThreadPoolExecutor(max_workers=len(questions)) as pool:
+        futures = {pool.submit(compound_answer, state_text, q): i for i, q in enumerate(questions)}
+        pending = set(futures)
+        while pending:
+            done = {f for f in pending if f.done()}
+            for f in done:
+                result, a_s, c_s = f.result()
+                results[futures[f]] = result
+                answer_s.append(a_s)
+                certainty_s.append(c_s)
+            pending -= done
+            if pending:
+                yield _compound_json(questions, results), (
+                    f"{jev_line}  \n**Granite Switch (compound thinking, Mellea):** "
+                    f"{len(questions) - len(pending)} of {len(questions)} done…"
+                )
+                time.sleep(0.25)
+    total_s = time.perf_counter() - t0
+    warmer.touch()
+
+    wake_note = f" · waited {wake_s:.0f} s for the endpoint to wake (not counted)" if wake_s > 5 else ""
+    timing = (
+        f"{jev_line}  \n"
+        f"**Granite Switch (compound thinking, Mellea):** {total_s:.1f} s for "
+        f"{len(questions)} question(s) · `{MODEL_ID}`, same endpoint{wake_note}  \n"
+        f"Prefill of the shared state {prefill_s * 1000:.0f} ms, then all questions in "
+        f"parallel · per question: answer {max(answer_s):.1f} s max, certainty "
+        f"{sum(certainty_s) / len(certainty_s) * 1000:.0f} ms avg (aLoRA on the cached answer)"
+    )
+    yield _compound_json(questions, results), timing
+
+
+# --------------------------------------------------------------------------- #
 # Jev (real API)
 # --------------------------------------------------------------------------- #
 
@@ -474,25 +591,32 @@ FAST_QUESTIONS_LABEL = f"Yes/no questions (one per line, up to {MAX_QUESTIONS})"
 SLOW_QUESTIONS_LABEL = f"Questions, yes/no or free-form (one per line, up to {MAX_QUESTIONS})"
 
 
-def _is_slow(mode: str) -> bool:
-    return mode == "slow"
-
-
 def think(mode: str, state_text: str, questions_text: str):
-    """Run the selected mode. Fast: nouls vs Jev. Slow: Granite writes answers."""
-    if not _is_slow(mode):
+    """Run the selected mode.
+
+    Fast: nouls vs Jev. Slow: Granite writes answers. Compound: Granite writes
+    answers and scores each one's certainty, returned as JSON.
+    """
+    if mode == "fast":
         rows, timing_md, status = compare(state_text, questions_text)
-        yield rows, gr.skip(), timing_md, status
+        yield rows, gr.skip(), gr.skip(), timing_md, status
         return
     if not state_text.strip():
         raise gr.Error("Enter some state for the model to think about.")
     questions = _parse_questions(questions_text)
-    for rows, timing_md in think_slow(state_text, questions):
-        yield gr.skip(), rows, timing_md, warmer.status()
+    if mode == "slow":
+        for rows, timing_md in think_slow(state_text, questions):
+            yield gr.skip(), rows, gr.skip(), timing_md, warmer.status()
+    else:
+        for result_json, timing_md in think_compound(state_text, questions):
+            yield gr.skip(), gr.skip(), result_json, timing_md, warmer.status()
+
+
+BUTTON_LABELS = {"fast": "Compare", "slow": "Think slow", "compound": "Think compound"}
 
 
 def set_mode(mode: str):
-    fast = not _is_slow(mode)
+    fast = mode == "fast"
     return (
         gr.update(
             label=FAST_QUESTIONS_LABEL if fast else SLOW_QUESTIONS_LABEL,
@@ -500,9 +624,10 @@ def set_mode(mode: str):
             if fast
             else "e.g. Is the customer asking for a refund? Or: What does the customer want?",
         ),
-        gr.update(value="Compare" if fast else "Think slow"),
-        gr.update(visible=fast),  # nouls table
-        gr.update(visible=not fast),  # answers table
+        gr.update(value=BUTTON_LABELS[mode]),
+        gr.update(visible=mode == "fast"),  # nouls table
+        gr.update(visible=mode == "slow"),  # answers table
+        gr.update(visible=mode == "compound"),  # compound JSON
         "",  # clear the previous run's timing
     )
 
@@ -513,8 +638,8 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-# Style the Thinking radio as a segmented toggle: one pill, two equal halves,
-# the selected half in the theme's primary color. The native radio circles are
+# Style the Thinking radio as a segmented toggle: one pill, equal segments,
+# the selected one in the theme's primary color. The native radio circles are
 # hidden visually but stay in the DOM, so keyboard and screen readers still work.
 CSS = """
 #thinking-toggle .wrap {
@@ -570,15 +695,25 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "also serves Granite as a regular LLM that explains, drafts and works "
         "through problems in text. Fast gut calls and slow reasoning from one "
         "deployment. Jev returns decisions only; it doesn't generate text. Switch "
-        "to **🐢 Thinking slow** below to try it."
+        "to **🐢 Thinking slow** below to try it.\n\n"
+        "**Or both at once.** **🧠 Compound** thinking writes the answer, then has "
+        "the UQ adapter score its certainty in that answer, returned together as "
+        "JSON. This mode is built with [Mellea](https://mellea.ai)."
     )
     with gr.Row():
         with gr.Column():
             mode = gr.Radio(
-                choices=[("⚡ Thinking fast", "fast"), ("🐢 Thinking slow", "slow")],
+                choices=[
+                    ("⚡ Thinking fast", "fast"),
+                    ("🐢 Thinking slow", "slow"),
+                    ("🧠 Compound", "compound"),
+                ],
                 value="fast",
                 label="Thinking",
-                info="Fast: yes/no questions, nouls vs Jev. Slow: free-form questions, Granite writes answers.",
+                info=(
+                    "Fast: yes/no questions, nouls vs Jev. Slow: Granite writes answers. "
+                    "Compound: Granite writes answers and scores its certainty in each, as JSON."
+                ),
                 elem_id="thinking-toggle",
             )
             state = gr.Textbox(
@@ -609,6 +744,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
                 wrap=True,
                 visible=False,
             )
+            compound_json = gr.JSON(label="Compound thinking (JSON)", visible=False)
             timing = gr.Markdown()
     gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     gr.Markdown(
@@ -621,13 +757,13 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
     mode.change(
         set_mode,
         inputs=mode,
-        outputs=[questions, run, fast_table, slow_table, timing],
+        outputs=[questions, run, fast_table, slow_table, compound_json, timing],
         show_progress="hidden",
     )
     run.click(
         think,
         inputs=[mode, state, questions],
-        outputs=[fast_table, slow_table, timing, endpoint_status],
+        outputs=[fast_table, slow_table, compound_json, timing, endpoint_status],
     )
     # Wake on page load, and keep the status line current while it wakes.
     demo.load(on_page_load, outputs=endpoint_status, show_progress="hidden")
