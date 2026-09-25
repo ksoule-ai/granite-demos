@@ -71,6 +71,27 @@ gets no reuse.
 The adapter call goes through `mfuncs.act` with an `Intrinsic`, the same path
 `core.check_certainty` uses, so the token usage on the model output is kept.
 
+## Warm start
+
+The endpoint scales to zero after 15 idle minutes (HF's minimum), and a cold
+start takes about 3–5 minutes. So that visitors don't sit through that after
+clicking **Compare**, one shared background warmer handles it:
+
+1. **Wake on page load.** Opening the page probes the endpoint's `/models`
+   route. If it's asleep, that request starts it, and the warmer keeps polling
+   while the visitor reads and types.
+2. **Warm-up request.** Once the endpoint answers, the warmer sends one
+   throwaway uncertainty-adapter call, so the first timed run doesn't pay for
+   opening the connection or the first adapter call.
+3. **Status line.** The page shows *checking / asleep, waking / warming /
+   ready*, refreshed every 3 seconds.
+
+"Ready" expires 10 minutes after the last use, safely inside the 15-minute
+scale-down window. After that the next visitor re-checks rather than trusting
+an endpoint that may have gone to sleep. **Compare** waits on the same warmer,
+and any wait is reported separately, not counted in Granite's time. Only one
+wake/warm pass runs at a time, however many tabs are open.
+
 The Jev side calls `TypeSafeClient.system_one(...)` with one `Noul` per
 question and reads `response.nouls[key].noul`. All questions go in one
 request. The client points at OpenRouter's System One API
@@ -98,6 +119,6 @@ as-is.
   its calibration against Jev is exactly what this demo is meant to test.
 - Priming adds one round trip before the fan-out. With one question there's
   nothing to share. Jev answers every question in one call.
-- The endpoint scales to zero. The first run after idle waits (up to ~7
-  minutes) for it to wake; that wait is reported separately and not counted
-  in Granite's time.
+- The warmer shortens cold starts but can't skip them. If someone clicks
+  **Compare** within the first few minutes of opening the page after idle,
+  they still wait for the rest of the wake-up (up to ~7 minutes).

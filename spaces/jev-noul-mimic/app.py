@@ -35,6 +35,7 @@ vLLM's ``cached_tokens`` usage is reported so the cache hits are visible.
 
 import json
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -56,8 +57,12 @@ from typesafe_sdk import Noul, TypeSafeClient, TypeSafeError
 ENDPOINT_URL = os.environ["HF_ENDPOINT_URL"].rstrip("/")
 HF_TOKEN = os.environ["HF_TOKEN"]
 MODEL_ID = os.environ.get("MODEL_ID", "ibm-granite/granite-switch-4.1-3b-preview")
-# The endpoint scales to zero; the first request after idle wakes it.
+# The endpoint scales to zero after 15 idle minutes; the first request after
+# that wakes it (a cold start takes ~3-5 minutes).
 WAKE_TIMEOUT_S = 420
+# Treat the endpoint as warm for this long after its last use, comfortably
+# inside the 15-minute scale-to-zero window.
+READY_TTL_S = 10 * 60
 
 # Jev is reached through OpenRouter's System One API, which the TypeSafe SDK
 # speaks natively; a bare model id like "jev-1.13" routes to typesafe/jev-1.13.
@@ -112,19 +117,93 @@ class Certainty:
     cached_tokens: int
 
 
-def wait_for_endpoint() -> float:
-    """Block until the endpoint answers /models; return seconds spent waiting."""
-    start = time.perf_counter()
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    while True:
+class EndpointWarmer:
+    """Wakes and warms the scale-to-zero endpoint once, shared by every visitor.
+
+    States: idle -> checking -> (waking) -> warming -> ready, or error.
+    "Waking" means the endpoint answered 503 and is cold-starting. "Warming"
+    sends one throwaway uncertainty-adapter call so the first timed request
+    doesn't pay for the new connection and first adapter call. "Ready" goes
+    stale READY_TTL_S after the last use, ahead of HF's 15-minute scale-down,
+    so the next visitor re-checks instead of trusting an endpoint that slept.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self.state = "idle"
+        self.detail = ""
+        self.started_at = 0.0
+        self.last_used = 0.0
+
+    def is_ready(self) -> bool:
+        return self.state == "ready" and time.time() - self.last_used < READY_TTL_S
+
+    def touch(self) -> None:
+        self.last_used = time.time()
+
+    def ensure(self) -> None:
+        """Start a wake/warm pass unless one is running or the endpoint is fresh."""
+        with self._lock:
+            if self.is_ready() or (self._thread is not None and self._thread.is_alive()):
+                return
+            self.state, self.detail, self.started_at = "checking", "", time.time()
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def _run(self) -> None:
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        while True:
+            try:
+                if httpx.get(f"{ENDPOINT_URL}/models", headers=headers, timeout=10).is_success:
+                    break
+            except httpx.HTTPError:
+                pass
+            # Any request to a scaled-to-zero endpoint starts it; keep polling.
+            self.state = "waking"
+            if time.time() - self.started_at > WAKE_TIMEOUT_S:
+                self.state, self.detail = "error", "didn't wake up within 7 minutes"
+                return
+            time.sleep(10)
+        self.state = "warming"
         try:
-            if httpx.get(f"{ENDPOINT_URL}/models", headers=headers, timeout=10).is_success:
-                return time.perf_counter() - start
-        except httpx.HTTPError:
-            pass
-        if time.perf_counter() - start > WAKE_TIMEOUT_S:
-            raise gr.Error("The Granite Switch endpoint didn't wake up in time. Try again shortly.")
-        time.sleep(10)
+            granite_noul("This is a warm-up request.", "Is this a warm-up request?")
+        except Exception as e:  # surface any failure in the status line
+            self.state, self.detail = "error", f"warm-up call failed: {e}"
+            return
+        self.detail = f"{time.time() - self.started_at:.0f} s"
+        self.touch()
+        self.state = "ready"
+
+    def wait_ready(self) -> float:
+        """Block until ready (starting a pass if needed); return seconds waited."""
+        start = time.time()
+        self.ensure()
+        while not self.is_ready():
+            if self.state == "error":
+                raise gr.Error(f"Granite Switch endpoint unavailable: {self.detail}. Try again shortly.")
+            if time.time() - start > WAKE_TIMEOUT_S + 60:
+                raise gr.Error("The Granite Switch endpoint didn't wake up in time. Try again shortly.")
+            time.sleep(1)
+        return time.time() - start
+
+    def status(self) -> str:
+        elapsed = time.time() - self.started_at
+        if self.is_ready():
+            return "**Granite endpoint:** ● ready"
+        return {
+            "idle": "**Granite endpoint:** not checked yet",
+            "checking": "**Granite endpoint:** checking…",
+            "waking": f"**Granite endpoint:** ○ asleep, waking up ({elapsed:.0f} s so far; "
+            "a cold start takes about 3–5 min)",
+            "warming": "**Granite endpoint:** ◐ up, sending a warm-up request…",
+            "error": f"**Granite endpoint:** ✕ {self.detail}",
+            # "ready" but stale: it may have scaled to zero since.
+            "ready": "**Granite endpoint:** idle for a while; will re-check on next use",
+        }[self.state]
+
+
+warmer = EndpointWarmer()
 
 
 def granite_noul(state: str, question: str) -> Certainty:
@@ -217,8 +296,9 @@ def compare(state_text: str, questions_text: str):
     # Jev runs while the Granite endpoint wakes (if needed) and answers.
     with ThreadPoolExecutor(max_workers=1) as pool:
         jev_future = pool.submit(jev_nouls, jev_state, questions)
-        wake_s = wait_for_endpoint()
+        wake_s = warmer.wait_ready()
         granite, g_time = granite_nouls(state_text, questions)
+        warmer.touch()
         jev, jev_s, jev_status = jev_future.result()
 
     rows = []
@@ -240,7 +320,7 @@ def compare(state_text: str, questions_text: str):
         if fanout_prompt
         else "single question, nothing to share"
     )
-    wake_note = f" · endpoint was asleep, woke in {wake_s:.0f} s (not counted)" if wake_s > 5 else ""
+    wake_note = f" · waited {wake_s:.0f} s for the endpoint to wake (not counted)" if wake_s > 1 else ""
     timing = (
         f"{jev_line}  \n"
         f"**Granite Switch + Mellea:** {g_time['total_s'] * 1000:.0f} ms end to end "
@@ -249,7 +329,13 @@ def compare(state_text: str, questions_text: str):
         f"({granite[0].prompt_tokens} prompt tokens), then {len(fanout)} in parallel "
         f"{g_time['fanout_s'] * 1000:.0f} ms · {cache_line}"
     )
-    return rows, timing
+    return rows, timing, warmer.status()
+
+
+def on_page_load() -> str:
+    """Start waking the endpoint as soon as someone opens the page."""
+    warmer.ensure()
+    return warmer.status()
 
 
 EXAMPLES = [
@@ -298,6 +384,7 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
                 lines=5,
             )
             run = gr.Button("Compare", variant="primary")
+            endpoint_status = gr.Markdown(warmer.status())
         with gr.Column():
             table = gr.Dataframe(
                 headers=[
@@ -315,10 +402,13 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
         "Mellea returns the probability-weighted average of those bins, so the "
         "Granite noul always falls between 0.05 and 0.95. Both times are full round "
-        "trips. The Granite endpoint scales to zero, so the first run after idle "
-        "waits for it to wake; that wait isn't counted."
+        "trips. The Granite endpoint scales to zero after 15 idle minutes; opening "
+        "this page starts waking it, and any wait isn't counted in Granite's time."
     )
-    run.click(compare, inputs=[state, questions], outputs=[table, timing])
+    run.click(compare, inputs=[state, questions], outputs=[table, timing, endpoint_status])
+    # Wake on page load, and keep the status line current while it wakes.
+    demo.load(on_page_load, outputs=endpoint_status, show_progress="hidden")
+    gr.Timer(3).tick(warmer.status, outputs=endpoint_status, show_progress="hidden", queue=False)
 
 if __name__ == "__main__":
     demo.launch()
