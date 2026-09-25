@@ -31,9 +31,10 @@ For each question, on ZeroGPU:
 1. **Answer.** Mellea's `mfuncs.chat(..., format=YesNo)` constrains
    `granite-switch-4.1-3b-preview` to answer exactly `yes` or `no`.
 2. **Score.** Mellea's `core.check_certainty` runs Granite Switch's embedded
-   `uncertainty` adapter over that question-and-answer pair. It returns a
-   calibrated probability that the answer is correct, in ten bins
-   (0.05, 0.15, … 0.95).
+   `uncertainty` adapter over that question-and-answer pair. The adapter
+   scores ten bins (0.05, 0.15, … 0.95) for how likely the answer is to be
+   correct, and Mellea returns the probability-weighted average of those
+   bins, so certainty always falls between 0.05 and 0.95.
 3. **Fold.** `noul = certainty` if the answer is yes, otherwise `1 − certainty`.
 
 The Jev side calls `TypeSafeClient.system_one(...)` with one `Noul` per

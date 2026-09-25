@@ -271,9 +271,9 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
             timing = gr.Markdown()
     gr.Examples(EXAMPLES, inputs=[state, questions])
     gr.Markdown(
-        "Note: the uncertainty adapter reports certainty in ten bins (0.05, 0.15, "
-        "… 0.95), so Granite nouls are coarser than Jev's and never reach 0 or 1. "
-        "Granite time is GPU compute only; it doesn't "
+        "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
+        "Mellea returns the probability-weighted average of those bins, so Granite "
+        "nouls always fall between 0.05 and 0.95. Granite time is GPU compute only; it doesn't "
         "include ZeroGPU queueing. Jev time is the full API round trip."
     )
     run.click(compare, inputs=[state, questions], outputs=[table, timing])
