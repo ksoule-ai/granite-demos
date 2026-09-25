@@ -27,19 +27,14 @@ same input.
 ## How the Granite side produces a noul
 
 Granite never answers the question itself. For each question, on ZeroGPU,
-`granite-switch-4.1-3b-preview` makes two separate calls:
-
-1. **c(yes).** Prefill the assistant turn with "Yes." and run Mellea's
-   `core.check_certainty`, which calls Granite Switch's embedded
-   `uncertainty` adapter.
-2. **c(no).** Prefill "No." and run the adapter again.
-3. **Normalize.** `noul = c(yes) / (c(yes) + c(no))`.
+`granite-switch-4.1-3b-preview` makes one call: prefill the assistant turn
+with "Yes." and run Mellea's `core.check_certainty`, which calls Granite
+Switch's embedded `uncertainty` adapter. Its certainty that "Yes." is correct,
+c(yes), is the probability of yes, which is the noul.
 
 The adapter scores ten bins (0.05, 0.15, … 0.95) for how likely the
 prefilled answer is to be correct, and Mellea returns the probability-weighted
-average of those bins. Each certainty therefore falls between 0.05 and 0.95,
-and so does the noul. The two checks are independent, so c(yes) and c(no)
-needn't sum to 1; normalizing turns them into a single probability of yes.
+average of those bins, so the noul always falls between 0.05 and 0.95.
 
 The Jev side calls `TypeSafeClient.system_one(...)` with one `Noul` per
 question and reads `response.nouls[key].noul`. All questions go in one
@@ -63,7 +58,7 @@ as-is.
 - The Granite noul is an emulation. The uncertainty adapter was trained to
   judge whether an answer is correct, not to produce yes/no probabilities, so
   its calibration against Jev is exactly what this demo is meant to test.
-- Granite makes two adapter calls per question (prefilled yes, then no), so
-  more questions take longer. Jev answers every question in one call.
+- Granite makes one adapter call per question, so more questions take
+  longer. Jev answers every question in one call.
 - Granite time is GPU compute only and doesn't include ZeroGPU queueing. Jev
   time is the full API round trip.

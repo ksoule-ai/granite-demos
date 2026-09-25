@@ -9,10 +9,8 @@ This Space mimics that primitive with an open model running on ZeroGPU,
 without ever asking Granite for its own answer:
 
 1. Prefill the assistant turn with "Yes." and run Granite Switch's embedded
-   ``uncertainty`` adapter (via Mellea's ``core.check_certainty``) to get
-   c(yes), the certainty that "Yes." is correct.
-2. Separately, prefill "No." and run the adapter again to get c(no).
-3. Normalize the two into a noul: ``noul = c(yes) / (c(yes) + c(no))``.
+   ``uncertainty`` adapter (via Mellea's ``core.check_certainty``).
+2. Its certainty that "Yes." is correct, c(yes), is P(yes): the noul.
 
 The same state and questions go to the real Jev model via OpenRouter (nouls
 only), and the two sets of numbers are shown side by side.
@@ -105,18 +103,13 @@ def _certainty(prompt: str, prefilled_answer: str) -> float:
 
 @spaces.GPU(duration=_granite_duration)
 def granite_nouls(state: str, questions: list[str]) -> tuple[list[dict], float]:
-    """Return one {c_yes, c_no, noul} per question, plus GPU seconds."""
+    """Return one noul per question, plus GPU seconds."""
     start = time.perf_counter()
-    results = []
-    for question in questions:
-        prompt = _question_prompt(state, question)
-        # Two separate adapter calls, one per prefilled answer; Granite's own
-        # answer is never generated.
-        c_yes = _certainty(prompt, "Yes.")
-        c_no = _certainty(prompt, "No.")
-        noul = c_yes / (c_yes + c_no)
-        results.append({"c_yes": c_yes, "c_no": c_no, "noul": noul})
-    return results, time.perf_counter() - start
+    # One adapter call per question with "Yes." prefilled; Granite's own answer
+    # is never generated. c(yes) is the certainty that yes is correct, i.e.
+    # P(yes), which is exactly a noul.
+    nouls = [_certainty(_question_prompt(state, q), "Yes.") for q in questions]
+    return nouls, time.perf_counter() - start
 
 
 # --------------------------------------------------------------------------- #
@@ -173,9 +166,7 @@ def compare(state_text: str, questions_text: str):
             [
                 question,
                 None if j is None else round(j, 3),
-                round(g["noul"], 3),
-                round(g["c_yes"], 3),
-                round(g["c_no"], 3),
+                round(g, 3),
             ]
         )
 
@@ -188,7 +179,7 @@ def compare(state_text: str, questions_text: str):
         f"{jev_line}  \n"
         f"**Granite Switch + Mellea:** {granite_s * 1000:.0f} ms GPU time "
         f"for {len(questions)} question(s) · `{MODEL_ID}` · "
-        f"{2 * len(questions)} uncertainty-adapter calls (prefilled yes + no each)"
+        f"{len(questions)} uncertainty-adapter call(s) (prefilled yes)"
     )
     return rows, timing
 
@@ -223,9 +214,9 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
         "[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview) "
         "and [Mellea](https://mellea.ai), and compares the two on the same input.\n\n"
         "**How the Granite side works:** Granite never answers the question itself. "
-        "Instead, Mellea runs Granite Switch's embedded `uncertainty` adapter twice, "
-        "once with the answer prefilled as \"Yes.\" and once as \"No.\", giving "
-        "c(yes) and c(no). The noul is `c(yes) / (c(yes) + c(no))`."
+        "Instead, Mellea prefills the answer as \"Yes.\" and runs Granite Switch's "
+        "embedded `uncertainty` adapter on it. The adapter's certainty that yes is "
+        "correct, c(yes), is the noul."
     )
     with gr.Row():
         with gr.Column():
@@ -245,10 +236,8 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
                     "Question",
                     "Jev noul",
                     "Granite noul",
-                    "Granite c(yes)",
-                    "Granite c(no)",
                 ],
-                datatype=["str", "number", "number", "number", "number"],
+                datatype=["str", "number", "number"],
                 interactive=False,
                 wrap=True,
             )
@@ -256,10 +245,8 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
     gr.Examples(EXAMPLES, inputs=[state, questions])
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
-        "Mellea returns the probability-weighted average of those bins, so each "
-        "certainty falls between 0.05 and 0.95, and so does the Granite noul. "
-        "c(yes) and c(no) are scored independently, so they needn't sum to 1. "
-        "Granite time is GPU compute only; it doesn't "
+        "Mellea returns the probability-weighted average of those bins, so the "
+        "Granite noul always falls between 0.05 and 0.95. Granite time is GPU compute only; it doesn't "
         "include ZeroGPU queueing. Jev time is the full API round trip."
     )
     run.click(compare, inputs=[state, questions], outputs=[table, timing])
