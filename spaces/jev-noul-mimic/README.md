@@ -1,6 +1,6 @@
 ---
-title: Thinking Fast with Granite
-emoji: ⚡
+title: Thinking Fast and Slow with Granite
+emoji: 🧠
 colorFrom: blue
 colorTo: indigo
 sdk: gradio
@@ -11,10 +11,10 @@ pinned: false
 license: apache-2.0
 models:
   - ibm-granite/granite-switch-4.1-3b-preview
-short_description: System One yes/no calls from an open model, next to Jev
+short_description: Fast yes/no calls and slow answers from one Granite endpoint
 ---
 
-# Thinking Fast with Granite
+# Thinking Fast and Slow with Granite
 
 Some decisions don't need reasoning out loud. They need a fast, calibrated gut
 call. That's the idea behind *System One* models like TypeSafe AI's
@@ -111,7 +111,7 @@ gets no reuse.
 
 ## Thinking slow
 
-The **Thinking** toggle switches the page between two modes on the same state:
+The **Thinking** slider switches the page between two modes on the same state:
 
 - **⚡ Fast** (default): yes/no questions. Each gets a Jev noul and a Granite
   noul, as described above.

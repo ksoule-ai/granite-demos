@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Thinking Fast with Granite: Granite Switch vs. Jev, side-by-side nouls.
+"""Thinking Fast and Slow with Granite: Granite Switch vs. Jev, side-by-side nouls and free-form answers.
 
 Jev (TypeSafe AI's "System One" model) answers yes/no questions about a
 piece of state with a *noul*: one calibrated number in [0, 1], the
@@ -474,9 +474,14 @@ FAST_QUESTIONS_LABEL = f"Yes/no questions (one per line, up to {MAX_QUESTIONS})"
 SLOW_QUESTIONS_LABEL = f"Free-form questions (one per line, up to {MAX_QUESTIONS})"
 
 
-def think(mode: str, state_text: str, questions_text: str):
+def _is_slow(mode: float) -> bool:
+    """The thinking slider: 0 is fast, 1 is slow."""
+    return float(mode) >= 0.5
+
+
+def think(mode: float, state_text: str, questions_text: str):
     """Run the selected mode. Fast: nouls vs Jev. Slow: Granite writes answers."""
-    if mode == "fast":
+    if not _is_slow(mode):
         rows, timing_md, status = compare(state_text, questions_text)
         yield rows, gr.skip(), timing_md, status
         return
@@ -487,8 +492,8 @@ def think(mode: str, state_text: str, questions_text: str):
         yield gr.skip(), rows, timing_md, warmer.status()
 
 
-def set_mode(mode: str):
-    fast = mode == "fast"
+def set_mode(mode: float):
+    fast = not _is_slow(mode)
     return (
         gr.update(
             label=FAST_QUESTIONS_LABEL if fast else SLOW_QUESTIONS_LABEL,
@@ -511,9 +516,19 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-with gr.Blocks(title="Thinking Fast with Granite") as demo:
+# Make the thinking slider read as a fast/slow switch: labels at each end,
+# and no number box.
+CSS = """
+#thinking-ends { display: flex; justify-content: space-between; font-weight: 600; }
+#thinking-ends span:last-child { text-align: right; }
+#thinking-ends small { font-weight: 400; opacity: 0.75; }
+#thinking-slider input[type=number] { display: none; }
+"""
+
+
+with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
     gr.Markdown(
-        "# ⚡ Thinking Fast with Granite\n"
+        "# 🧠 Thinking Fast and Slow with Granite\n"
         "Some decisions don't need reasoning out loud. They need a fast, calibrated "
         "gut call. That's the idea behind *System One* models like TypeSafe AI's "
         "[Jev](https://docs.typesafe.ai): instead of text, Jev answers a yes/no "
@@ -538,17 +553,17 @@ with gr.Blocks(title="Thinking Fast with Granite") as demo:
         "**And it can think slow, too.** The same endpoint, with the same weights, "
         "also serves Granite as a regular LLM that explains, drafts and works "
         "through problems in text. Fast gut calls and slow reasoning from one "
-        "deployment. Jev returns decisions only; it doesn't generate text."
+        "deployment. Jev returns decisions only; it doesn't generate text. Slide "
+        "to **🐢 Thinking slow** below to try it."
     )
     with gr.Row():
         with gr.Column():
-            mode = gr.Radio(
-                choices=[
-                    ("⚡ Fast: yes/no questions, nouls vs Jev", "fast"),
-                    ("🐢 Slow: free-form questions, Granite writes answers", "slow"),
-                ],
-                value="fast",
-                label="Thinking",
+            gr.HTML(
+                '<div id="thinking-ends"><span>⚡ Thinking fast<br><small>yes/no, nouls vs Jev</small></span>'
+                '<span>🐢 Thinking slow<br><small>free-form answers</small></span></div>'
+            )
+            mode = gr.Slider(
+                minimum=0, maximum=1, step=1, value=0, show_label=False, elem_id="thinking-slider"
             )
             state = gr.Textbox(
                 label="State (text or JSON)",
@@ -612,4 +627,4 @@ with gr.Blocks(title="Thinking Fast with Granite") as demo:
     gr.Timer(3).tick(warmer.status, outputs=endpoint_status, show_progress="hidden", queue=False)
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(css=CSS)
