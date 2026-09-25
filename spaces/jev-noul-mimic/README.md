@@ -24,11 +24,11 @@ with a **noul**, the probability that the answer is yes.
 One open 3B model, Granite Switch, does both from a single endpoint, next to
 Jev (via [OpenRouter](https://openrouter.ai/typesafe)) on the same input:
 
-- **⚡ Thinking Fast:** a yes/no call as a noul, from two one-token adapter
-  calls per question, side by side with Jev.
-- **🐢 Thinking Slow:** a written answer plus Granite's certainty in it,
-  returned as JSON, built with [Mellea](https://mellea.ai). Jev returns
-  decisions only; it doesn't generate text.
+- **⚡ Thinking Fast:** a yes/no call as a noul, calculated by assessing the
+  certainty('yes')/(certainty('yes')+certainty('no'))
+- **🐢 Thinking Slow:** a written answer plus Granite's certainty in it, built
+  with [Mellea](https://mellea.ai). Jev returns decisions only; it doesn't
+  generate text.
 
 Granite Switch is served by vLLM on **a single NVIDIA L4 GPU (24 GB)**, on a
 Hugging Face Inference Endpoint. Both modes run on that one GPU.
@@ -43,9 +43,7 @@ Hugging Face Inference Endpoint. Both modes run on that one GPU.
   [Adapter catalog](https://generative-computing.github.io/granite-switch/adapter_catalog.html)
 - **Uncertainty quantification (UQ) adapter.** A calibrated adapter that scores
   how likely an answer is to be correct: of the answers it scores at X%, about
-  X% are right. Score a prefilled "Yes" and a prefilled "No", and
-  c(yes) / (c(yes) + c(no)) is a noul; score Granite's own written answer and
-  you get Thinking Slow.
+  X% are right.
   [Adapter README](https://huggingface.co/ibm-granite/granitelib-core-r1.0/blob/main/uncertainty/README.md)
 - **aLoRA (activated LoRA).** Adapters that switch on at a trigger token and
   reuse the base model's KV cache for everything before it, so Granite reads the
@@ -163,7 +161,7 @@ a clear yes or no are left out of the count and noted on the tile.
   (below). The table shows **Question | Granite response | Granite Certainty |
   Jev noul (reference)**; Jev answers the same questions in parallel as a
   reference column, since it returns decisions only and doesn't generate
-  text. The full JSON is under a collapsed **Raw JSON** section.
+  text.
 
 All preset examples use yes/no questions, so the same example works with both
 buttons.
@@ -181,23 +179,13 @@ question:
    comes first, so it shares the cached state prefix with Thinking Fast.
 2. `core.check_certainty` runs the UQ adapter on that context: the model's
    certainty that *its own answer* is correct (not a prefilled "Yes" or "No").
-3. The result is a Pydantic `SlowAnswer`, and the page returns the whole
-   response as JSON:
-
-```json
-{
-  "mode": "slow",
-  "model": "ibm-granite/granite-switch-4.1-3b-preview",
-  "results": [
-    {"question": "…", "answer": "…", "certainty": 0.83}
-  ]
-}
-```
+3. Each result (question, answer, certainty) becomes a row in the Thinking
+   Slow table.
 
 The certainty call is cheap because the adapter is an aLoRA. It reuses the KV
 cache for the question *and* the answer, and only generates the score. A
 1-token Mellea call caches the shared state prefix first; then every question
-runs in parallel, and the JSON fills in as each one finishes. Answers are
+runs in parallel, and the table fills in as each one finishes. Answers are
 capped at 512 tokens.
 
 On the 50-question stress example, Granite's written answers were right on

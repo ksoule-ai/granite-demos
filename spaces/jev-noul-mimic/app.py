@@ -380,17 +380,6 @@ def slow_answer(state: str, question: str) -> tuple[SlowAnswer, float, float]:
     return result, t1 - t0, t2 - t1
 
 
-def _slow_json(questions: list[str], results: list[SlowAnswer | None]) -> dict:
-    return {
-        "mode": "slow",
-        "model": MODEL_ID,
-        "results": [
-            r.model_dump() if r else {"question": q, "answer": None, "certainty": None}
-            for q, r in zip(questions, results)
-        ],
-    }
-
-
 def think_slow(state_text: str, questions: list[str]):
     """Prefill the shared state once, then run every question in parallel.
 
@@ -398,7 +387,7 @@ def think_slow(state_text: str, questions: list[str]):
     1's first token (as slow mode does), a 1-token Mellea call caches the
     state prefix. All questions then go out together and vLLM batches them.
     Yields (results so far, timing markdown, total seconds or None) as each
-    question finishes; the caller turns results into the table and JSON.
+    question finishes; the caller turns results into the table.
     """
     wake_s = warmer.wait_ready()
     t0 = time.perf_counter()
@@ -536,7 +525,7 @@ QUESTIONS_INFO = "Thinking Fast needs yes/no questions. Thinking Slow takes any 
 
 OUTPUT_HEADERS = {
     "fast": "### ⚡ Thinking Fast\nGranite Switch nouls: the uncertainty adapter's "
-    "c(yes) / (c(yes) + c(no)) for each question, from two one-token adapter calls.",
+    "certainty('yes')/(certainty('yes')+certainty('no')) for each question.",
     "slow": "### 🐢 Thinking Slow\nGranite Switch writes each answer, then scores its "
     "certainty in it. Built with Mellea.",
 }
@@ -641,8 +630,8 @@ def think(mode: str, state_text: str, questions_text: str):
     The first update sets the header to the chosen kind of thinking, shows that
     mode's results (hiding the others) and clears the last run, so the page
     switches the moment the button is clicked. Outputs, in order: header,
-    tiles, Thinking Fast table, Jev timing, Thinking Slow table, raw-JSON
-    accordion, Thinking Slow JSON, Granite timing, endpoint status.
+    tiles, Thinking Fast table, Jev timing, Thinking Slow table, Granite
+    timing, endpoint status.
     """
     fast = mode == "fast"
     yield (
@@ -651,8 +640,6 @@ def think(mode: str, state_text: str, questions_text: str):
         gr.update(visible=fast, value=None),
         "",
         gr.update(visible=not fast, value=None),
-        gr.update(visible=not fast),
-        None,
         "",
         gr.skip(),
     )
@@ -662,7 +649,7 @@ def think(mode: str, state_text: str, questions_text: str):
         )
         yield (
             gr.skip(), _stats_html(granite_ms, jev_ms, True, agreement, True), styled,
-            jev_timing, gr.skip(), gr.skip(), gr.skip(), timing_md, status,
+            jev_timing, gr.skip(), timing_md, status,
         )
         return
     if not state_text.strip():
@@ -676,8 +663,7 @@ def think(mode: str, state_text: str, questions_text: str):
                 jev_now = jev_future.result()[0] if jev_future.done() else None
                 yield (
                     gr.skip(), gr.skip(), gr.skip(), gr.skip(),
-                    _slow_table(questions, results, jev_now), gr.skip(), gr.skip(),
-                    timing_md, warmer.status(),
+                    _slow_table(questions, results, jev_now), timing_md, warmer.status(),
                 )
                 continue
             jev, jev_s, jev_status = jev_future.result()
@@ -688,8 +674,6 @@ def think(mode: str, state_text: str, questions_text: str):
                 gr.skip(),
                 _jev_timing_md(jev, jev_s, jev_status),
                 _slow_table(questions, results, jev),
-                gr.skip(),
-                _slow_json(questions, results),
                 timing_md,
                 warmer.status(),
             )
@@ -709,12 +693,12 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-# Soft yellow example boxes and the big end-to-end time tiles. Selectors are
+# Light blue example boxes and the big end-to-end time tiles. Selectors are
 # our own ids and classes, not Gradio internals.
 CSS = """
-/* Example boxes: soft light yellow so they stand out (softer in dark mode). */
-:root { --example-bg: #fff8d6; --example-bg-hover: #ffefad; --example-border: #f1e2a0; }
-.dark { --example-bg: #3a3522; --example-bg-hover: #4a4329; --example-border: #5c5230; }
+/* Example boxes: a light shade of blue so they stand out (muted in dark mode). */
+:root { --example-bg: #e8f2fc; --example-bg-hover: #d6e8fa; --example-border: #c5dcf3; }
+.dark { --example-bg: #1f2d3d; --example-bg-hover: #27394d; --example-border: #34506e; }
 #examples button {
   background: var(--example-bg) !important;
   border: 1px solid var(--example-border) !important;
@@ -740,11 +724,11 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "[Jev](https://docs.typesafe.ai): instead of text, Jev answers a yes/no "
         "question with a **noul**, the probability that the answer is yes.\n\n"
         "One open 3B model, Granite Switch, does both from a single endpoint:\n"
-        "- **⚡ Thinking Fast:** a yes/no call as a noul, from two one-token "
-        "adapter calls per question, side by side with Jev.\n"
+        "- **⚡ Thinking Fast:** a yes/no call as a noul, calculated by assessing "
+        "the certainty('yes')/(certainty('yes')+certainty('no'))\n"
         "- **🐢 Thinking Slow:** a written answer plus Granite's certainty in it, "
-        "returned as JSON, built with [Mellea](https://mellea.ai). Jev returns "
-        "decisions only; it doesn't generate text.\n\n"
+        "built with [Mellea](https://mellea.ai). Jev returns decisions only; it "
+        "doesn't generate text.\n\n"
         "### Technologies inside\n"
         "- **Granite Switch.** One checkpoint that bundles IBM's Granite 4.1 base "
         "model with 12 embedded adapter functions (RAG, safety, uncertainty and "
@@ -754,9 +738,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "[Adapter catalog](https://generative-computing.github.io/granite-switch/adapter_catalog.html)\n"
         "- **Uncertainty quantification (UQ) adapter.** A calibrated adapter that "
         "scores how likely an answer is to be correct: of the answers it scores at "
-        "X%, about X% are right. Score a prefilled \"Yes\" and a prefilled \"No\", "
-        "and c(yes) / (c(yes) + c(no)) is a noul; score Granite's own written "
-        "answer and you get Thinking Slow. "
+        "X%, about X% are right. "
         "[Adapter README](https://huggingface.co/ibm-granite/granitelib-core-r1.0/blob/main/uncertainty/README.md)\n"
         "- **aLoRA (activated LoRA).** Adapters that switch on at a trigger token "
         "and reuse the base model's KV cache for everything before it, so Granite "
@@ -818,8 +800,6 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
                 wrap=True,
                 visible=False,
             )
-            with gr.Accordion("Raw JSON (Thinking Slow)", open=False, visible=False) as raw_json:
-                slow_json = gr.JSON(show_label=False)
             timing = gr.Markdown()
             jev_timing = gr.Markdown()
     gr.Markdown(
@@ -835,7 +815,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
     # Each button starts its own kind of thinking straight away.
     run_outputs = [
         output_header, stats, fast_table, jev_timing,
-        slow_table, raw_json, slow_json, timing, endpoint_status,
+        slow_table, timing, endpoint_status,
     ]
     fast_btn.click(think_fast, [state, questions], run_outputs, api_name="think_fast")
     slow_btn.click(think_slow_mode, [state, questions], run_outputs, api_name="think_slow")
