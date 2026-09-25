@@ -24,8 +24,8 @@ with a **noul**, the probability that the answer is yes.
 One open 3B model, Granite Switch, does both from a single endpoint, next to
 Jev (via [OpenRouter](https://openrouter.ai/typesafe)) on the same input:
 
-- **⚡ Thinking Fast:** a yes/no call as a noul, calculated by assessing the
-  certainty('yes')/(certainty('yes')+certainty('no'))
+- **⚡ Thinking Fast:** a yes/no call as a noul, calculated from Granite's
+  one-token answer as P('yes')/(P('yes')+P('no'))
 - **🐢 Thinking Slow:** a written answer plus Granite's certainty in it, built
   with [Mellea](https://mellea.ai). Jev returns decisions only; it doesn't
   generate text.
@@ -46,8 +46,9 @@ Hugging Face Inference Endpoint. Both modes run on that one GPU.
   X% are right.
   [Adapter README](https://huggingface.co/ibm-granite/granitelib-core-r1.0/blob/main/uncertainty/README.md)
 - **aLoRA (activated LoRA).** Adapters that switch on at a trigger token and
-  reuse the base model's KV cache for everything before it, so Granite reads the
-  input once and every question, fast or slow, reuses that work.
+  reuse the base model's KV cache for everything before it, so checking the
+  certainty of an answer reuses the work Granite already did reading the input
+  and writing that answer.
   [Paper (NeurIPS 2025)](https://arxiv.org/abs/2504.12397) ·
   [Code](https://github.com/IBM/activated-lora)
 - **Optimized vLLM kernels.** Granite Switch's vLLM integration, with kernels
@@ -55,65 +56,40 @@ Hugging Face Inference Endpoint. Both modes run on that one GPU.
   rather than per request, so adapter and base-model requests share batches and
   one KV cache.
 
-## How the Granite side produces a noul
+## How Thinking Fast produces a noul
 
 Granite Switch runs on vLLM on a Hugging Face Inference Endpoint (see the
 [granite-demos README](https://github.com/ksoule-ai/granite-demos#readme) for
-how that endpoint is built). The Space calls it with the OpenAI client and
-selects the embedded adapter by name through `chat_template_kwargs`.
+how that endpoint is built). The Space calls it with the OpenAI client.
 
-Granite never answers the question itself. The prompt ends with the
-instruction "Reply with exactly one word, 'Yes' or 'No'.", and for each
-question Granite Switch's embedded `uncertainty` adapter runs twice:
+The prompt ends with the instruction "Reply with exactly one word, 'Yes' or
+'No'.", so the first token Granite generates *is* its answer. The request
+asks for just that one token, with its probabilities (`logprobs`, top 20
+alternatives):
 
-1. On a prefilled **"Yes"**: c(yes), its certainty that yes is correct.
-2. On a prefilled **"No"**: c(no), its certainty that no is correct.
+1. Convert each candidate token's log-probability to a probability.
+2. Sum the spellings: "Yes", "yes" and " yes" are separate tokens, and so are
+   the "No" variants.
+3. Renormalize over the two: **noul = P(yes) / (P(yes) + P(no))**.
 
-The noul is **c(yes) / (c(yes) + c(no))**.
-
-Why normalize: the adapter's certainty drifts from one input to another, so
-c(yes) alone has no fixed yes/no boundary, and a single global rescaling
-fitted on one set of inputs made others worse. c(no) on the same input barely
-depends on the true answer, but it tracks that drift, so dividing by
-c(yes) + c(no) cancels it and puts the boundary back at 0.5.
-
-The adapter scores ten bins (0.05, 0.15, … 0.95) for how likely a prefilled
-answer is to be correct, and each certainty is the probability-weighted average
-of those bins, so c(yes), c(no) and the noul all fall between 0.05 and 0.95.
+In practice virtually all the probability lands on yes or no tokens, so
+nothing meaningful is lost by keeping only the top 20.
 
 **How it compares** on 82 hand-labeled questions across all seven examples
-(scored at a 0.5 cutoff; AUC = how well the scores rank yes above no):
+(scored at a 0.5 cutoff; AUC = how well the scores rank yes above no; Brier =
+how well calibrated the probabilities are, lower is better):
 
-| Granite noul | Correct | AUC |
-|---|---|---|
-| c(yes) alone, prefilled "Yes." (earlier version) | 52/82 | 0.83 |
-| **c(yes) / (c(yes) + c(no))** (this demo) | **74/82** | **0.93** |
-| Jev (reference) | 82/82 | 1.00 |
+| Granite noul | Correct | AUC | Brier |
+|---|---|---|---|
+| UQ adapter, c(yes) on a prefilled "Yes." (earlier version) | 52/82 | 0.83 | 0.198 |
+| UQ adapter, c(yes) / (c(yes) + c(no)) (earlier version) | 74/82 | 0.93 | 0.222 |
+| **Answer-token P(yes) / (P(yes) + P(no))** (this demo) | **77/82** | **0.99** | **0.041** |
+| Jev (reference) | 82/82 | 1.00 | 0.001 |
 
-The normalized noul gets the direction right far more often, but its values
-stay fairly close to 0.5, so read them as a ranking and a lean rather than as
-sharply calibrated probabilities.
-
-## One generated token per adapter call
-
-The adapter always replies `{"score": "N"}`, where the digit N is the only
-part that carries information. That reply is 7 tokens, and on an L4 each
-generated token costs about 33 ms. So the request prefills the adapter's reply
-up to the digit (`{"score": "`) and asks vLLM to continue it
-(`continue_final_message`). The model generates exactly one token, and its
-top-10 logprobs give the certainty: keep the digit candidates, renormalize,
-and take the expected value of their mapped certainties.
-
-This is the same conversation and decoding that Mellea's
-`core.check_certainty` uses, minus the 6 fixed tokens. The adapter's settings
-(invocation text, score field, digit-to-certainty mapping) are read from the
-model repo's `io_configs/uncertainty/io.yaml`, the file Mellea reads too.
-Measured on an L4 over 34 questions:
-
-| | Mellea `check_certainty` path | 1-token path |
-|---|---|---|
-| Median latency per call | 281 ms | 72 ms |
-| Certainty difference | — | median 0.0014, max 0.0088 |
+The uncertainty adapter is built to judge whether an answer is correct, and it
+does that well on Granite's written answers (see Thinking Slow). Scoring a bare
+prefilled "Yes" or "No" was a weaker yes/no signal than the answer token
+itself, which is also faster: one generated token per question.
 
 ## Batching on the endpoint
 
@@ -122,20 +98,17 @@ The prompt is laid out so every question shares one long prefix:
 ```
 <state>
 
-Answer the following question with 'yes' or 'no'.
+Reply with exactly one word, 'Yes' or 'No'.
 <question>
 ```
 
-The uncertainty adapter is an aLoRA: it activates only at its invocation
-token and reads the base model's KV cache for everything before it. That lets
-vLLM's prefix cache compute the state once and reuse it for every question:
+vLLM's prefix cache computes the state once and reuses it for every question:
 
-1. **Prime.** Question 1's "Yes" call goes alone, so vLLM computes and caches
-   the shared prefix. Requests scheduled in the same step can't share blocks
-   that are still being computed, so priming beats sending everything at once.
-2. **Fan out.** The other 2N − 1 adapter calls (the rest of the "Yes" and "No"
-   calls) go concurrently, one thread each, sharing one OpenAI client. vLLM
-   batches them, and each only reads its own question and prefilled answer.
+1. **Prime.** Question 1 goes alone, so vLLM computes and caches the shared
+   prefix. Requests scheduled in the same step can't share blocks that are
+   still being computed, so priming beats sending everything at once.
+2. **Fan out.** The other questions go concurrently, one thread each, sharing
+   one OpenAI client. vLLM batches them, and each only reads its own question.
 
 The page reports vLLM's `cached_tokens` for the fan-out, so the reuse is
 visible. vLLM caches in 16-token blocks, so a state shorter than one block
@@ -196,20 +169,20 @@ right, 0.30 when wrong (only 2 wrong answers, so treat that as indicative).
 
 The endpoint scales to zero after 15 idle minutes (HF's minimum), and a cold
 start takes about 3–5 minutes. So that visitors don't sit through that after
-clicking **Compare**, one shared background warmer handles it:
+clicking a button, one shared background warmer handles it:
 
 1. **Wake on page load.** Opening the page probes the endpoint's `/models`
    route. If it's asleep, that request starts it, and the warmer keeps polling
    while the visitor reads and types.
 2. **Warm-up request.** Once the endpoint answers, the warmer sends one
-   throwaway uncertainty-adapter call, so the first timed run doesn't pay for
-   opening the connection or the first adapter call.
+   throwaway Thinking Fast call, so the first timed run doesn't pay for
+   opening the connection.
 3. **Status line.** The page shows *checking / asleep, waking / warming /
    ready*, refreshed every 3 seconds.
 
 "Ready" expires 10 minutes after the last use, safely inside the 15-minute
 scale-down window. After that the next visitor re-checks rather than trusting
-an endpoint that may have gone to sleep. **Compare** waits on the same warmer,
+an endpoint that may have gone to sleep. Both buttons wait on the same warmer,
 and any wait is reported separately, not counted in Granite's time. Only one
 wake/warm pass runs at a time, however many tabs are open.
 
@@ -235,11 +208,13 @@ as-is.
 
 ## Caveats
 
-- The Granite noul is an emulation. The uncertainty adapter was trained to
-  judge whether an answer is correct, not to produce yes/no probabilities, so
-  its calibration against Jev is exactly what this demo is meant to test.
+- The Granite noul is an emulation: the probability a general-purpose LLM
+  puts on its one-word answer, not a model trained to output calibrated
+  decisions. How it compares with Jev is exactly what this demo is meant to
+  test. It tends to be confident, so when it's wrong it can be confidently
+  wrong.
 - Priming adds one round trip before the fan-out. With one question there's
   nothing to share. Jev answers every question in one call.
 - The warmer shortens cold starts but can't skip them. If someone clicks
-  **Compare** within the first few minutes of opening the page after idle,
+  a button within the first few minutes of opening the page after idle,
   they still wait for the rest of the wake-up (up to ~7 minutes).
