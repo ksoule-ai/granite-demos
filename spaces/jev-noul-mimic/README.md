@@ -21,7 +21,8 @@ its yes/no primitive: one calibrated number in [0, 1], the probability that the
 answer is yes.
 
 This Space rebuilds that primitive from open parts and shows it next to the real
-Jev API on the same input.
+Jev model, called through [OpenRouter](https://openrouter.ai/typesafe), on the
+same input.
 
 ## How the Granite side produces a noul
 
@@ -37,7 +38,9 @@ For each question, on ZeroGPU:
 
 The Jev side calls `TypeSafeClient.system_one(...)` with one `Noul` per
 question and reads `response.nouls[key].noul`. All questions go in one
-request.
+request. The client points at OpenRouter's System One API
+(`base_url="https://openrouter.ai/api"`), which the TypeSafe SDK supports
+as-is.
 
 ## Setup
 
@@ -45,9 +48,10 @@ request.
 2. **Settings → Hardware → ZeroGPU.** This needs a PRO account, or an
    organization on a Team or Enterprise plan.
 3. **Settings → Secrets:**
-   - `TYPESAFE_API_KEY`: your Jev API key. Without it, the Granite column
-     still works and the Jev column shows as unavailable.
-   - `JEV_MODEL` (optional): defaults to `jev-latest`.
+   - `OPENROUTER_API_KEY`: your OpenRouter API key. Without it, the Granite
+     column still works and the Jev column shows as unavailable.
+   - `JEV_MODEL` (optional): defaults to `jev-1.13` (routed to
+     `typesafe/jev-1.13`).
 
 ## Caveats
 

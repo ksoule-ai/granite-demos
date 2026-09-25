@@ -14,8 +14,8 @@ This Space mimics that primitive with an open model running on ZeroGPU:
 3. The certainty is folded into a noul:
    ``noul = certainty if answer == "yes" else 1 - certainty``.
 
-The same state and questions go to the real Jev API (nouls only), and the
-two sets of numbers are shown side by side.
+The same state and questions go to the real Jev model via OpenRouter (nouls
+only), and the two sets of numbers are shown side by side.
 """
 
 import json
@@ -41,7 +41,10 @@ from mellea.stdlib.context import ChatContext
 from typesafe_sdk import Noul, TypeSafeClient, TypeSafeError
 
 MODEL_ID = IBM_GRANITE_SWITCH_4_1_3B_PREVIEW.hf_model_name
-JEV_MODEL = os.environ.get("JEV_MODEL", "jev-latest")
+# Jev is reached through OpenRouter's System One API, which the TypeSafe SDK
+# speaks natively; a bare model id like "jev-1.13" routes to typesafe/jev-1.13.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api"
+JEV_MODEL = os.environ.get("JEV_MODEL", "jev-1.13")
 MAX_QUESTIONS = 8
 
 # ZeroGPU: place the model on cuda at module level (CUDA is emulated outside
@@ -131,12 +134,15 @@ def granite_nouls(state: str, questions: list[str]) -> tuple[list[dict], float]:
 
 def jev_nouls(state, questions: list[str]) -> tuple[list[float] | None, float, str]:
     """Return (nouls, seconds, status). nouls is None when the call fails."""
-    if not os.environ.get("TYPESAFE_API_KEY"):
-        return None, 0.0, "TYPESAFE_API_KEY is not set on this Space."
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return None, 0.0, "OPENROUTER_API_KEY is not set on this Space."
     keys = [f"q{i}" for i in range(1, len(questions) + 1)]
     start = time.perf_counter()
     try:
-        with TypeSafeClient(model=JEV_MODEL, timeout=30.0) as client:
+        with TypeSafeClient(
+            api_key=api_key, base_url=OPENROUTER_BASE_URL, model=JEV_MODEL, timeout=30.0
+        ) as client:
             response = client.system_one(
                 state=state,
                 questions={k: Noul(instructions=q) for k, q in zip(keys, questions)},
@@ -144,7 +150,11 @@ def jev_nouls(state, questions: list[str]) -> tuple[list[float] | None, float, s
     except TypeSafeError as e:
         return None, time.perf_counter() - start, f"Jev call failed: {e}"
     elapsed = time.perf_counter() - start
-    return [response.nouls[k].noul for k in keys], elapsed, f"model `{response.model}`"
+    return (
+        [response.nouls[k].noul for k in keys],
+        elapsed,
+        f"`{response.model}` via OpenRouter",
+    )
 
 
 # --------------------------------------------------------------------------- #
