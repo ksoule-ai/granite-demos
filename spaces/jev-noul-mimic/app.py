@@ -611,9 +611,10 @@ OUTPUT_HEADERS = {
     "certainty in it. Built with Mellea.",
 }
 IDLE_HEADER = "### Results\nPick a kind of thinking to start."
-# Everything Jev is light blue, via one CSS variable defined per theme (see CSS).
+# Everything Jev is light grey, via one CSS variable defined per theme (see CSS),
+# so the reference recedes behind Granite's results.
 JEV_COLUMN = "Jev noul (reference)"
-JEV_CELL_STYLE = "color: var(--jev-color); font-weight: 600;"
+JEV_CELL_STYLE = "color: var(--jev-color);"
 
 
 def _fmt_time(ms: float) -> str:
@@ -695,12 +696,12 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-# Light blue for everything Jev (a deeper light blue on light backgrounds so it
-# stays readable), plus the big end-to-end time tiles. Selectors are our own
-# classes, not Gradio internals.
+# Light grey for everything Jev, so the reference stays quiet next to Granite's
+# results, plus the big end-to-end time tiles. Selectors are our own classes,
+# not Gradio internals.
 CSS = """
-:root { --jev-color: #3a9ad9; }
-.dark { --jev-color: #8cc8f5; }
+:root { --jev-color: #9ca3af; }
+.dark { --jev-color: #7d8590; }
 .jev-metric, .jev-metric * { color: var(--jev-color) !important; }
 .e2e-row { display: flex; gap: var(--spacing-lg); margin: var(--spacing-md) 0; }
 .e2e-tile {
