@@ -27,8 +27,12 @@ Jev (via [OpenRouter](https://openrouter.ai/typesafe)) on the same input:
 - **⚡ Thinking Fast:** a yes/no call as a noul, similar in output to Jev's
   System One decisions, calculated from Granite's one-token answer as
   P('yes')/(P('yes')+P('no'))
-- **🐢 Thinking Slow:** a written answer plus Granite's certainty in it, built
-  with [Mellea](https://mellea.ai).
+- **🐢 Thinking Slow:** a written answer plus Granite's certainty in it. Once
+  Granite has answered, the UQ adapter reads the question and the answer and
+  scores how likely that answer is to be correct, from 0.05 to 0.95. The score
+  is calibrated: of the answers it scores at 70%, about 70% are right. It's most
+  meaningful for questions with a checkable answer; summaries and drafts tend
+  to score lower.
 
 Granite Switch is served by vLLM on **a single NVIDIA L4 GPU (24 GB)**, on a
 Hugging Face Inference Endpoint. Both modes run on that one GPU.
@@ -55,6 +59,15 @@ Hugging Face Inference Endpoint. Both modes run on that one GPU.
   optimized by the Granite team, applies adapter weights per token position
   rather than per request, so adapter and base-model requests share batches and
   one KV cache.
+- **Mellea.** IBM Research's open-source Python library for writing *generative
+  programs*: it replaces brittle prompts with structured, testable LLM calls
+  built on typed outputs, verifiable requirements and automatic repair, and it
+  works natively with Granite's adapter functions. Here it drives Thinking
+  Slow, writing each answer and then calling Granite Switch's UQ adapter by name
+  to score it.
+  [mellea.ai](https://mellea.ai) ·
+  [GitHub](https://github.com/generative-computing/mellea) ·
+  [IBM Research blog](https://research.ibm.com/blog/generative-computing-mellea)
 
 ## How Thinking Fast produces a noul
 

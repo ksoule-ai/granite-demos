@@ -459,7 +459,7 @@ OUTPUT_HEADERS = {
     "fast": "### ⚡ Thinking Fast\nGranite Switch nouls: P('yes')/(P('yes')+P('no')) "
     "from Granite's one-token answer to each question.",
     "slow": "### 🐢 Thinking Slow\nGranite Switch writes each answer, then scores its "
-    "certainty in it. Built with Mellea.",
+    "certainty in it.",
 }
 JEV_COLUMN = "Jev noul (reference)"
 
@@ -703,8 +703,12 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "- **⚡ Thinking Fast:** a yes/no call as a noul, similar in output to Jev's "
         "System One decisions, calculated from Granite's one-token answer as "
         "P('yes')/(P('yes')+P('no'))\n"
-        "- **🐢 Thinking Slow:** a written answer plus Granite's certainty in it, "
-        "built with [Mellea](https://mellea.ai).\n\n"
+        "- **🐢 Thinking Slow:** a written answer plus Granite's certainty in it. "
+        "Once Granite has answered, the UQ adapter reads the question and the "
+        "answer and scores how likely that answer is to be correct, from 0.05 to "
+        "0.95. The score is calibrated: of the answers it scores at 70%, about 70% "
+        "are right. It's most meaningful for questions with a checkable answer; "
+        "summaries and drafts tend to score lower.\n\n"
         "### Technologies inside\n"
         "- **Granite Switch.** One checkpoint that bundles IBM's Granite 4.1 base "
         "model with 12 embedded adapter functions (RAG, safety, uncertainty and "
@@ -725,7 +729,16 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "- **Optimized vLLM kernels.** Granite Switch's vLLM integration, with "
         "kernels optimized by the Granite team, applies adapter weights per token "
         "position rather than per request, so adapter and base-model requests "
-        "share batches and one KV cache."
+        "share batches and one KV cache.\n"
+        "- **Mellea.** IBM Research's open-source Python library for writing "
+        "*generative programs*: it replaces brittle prompts with structured, "
+        "testable LLM calls built on typed outputs, verifiable requirements and "
+        "automatic repair, and it works natively with Granite's adapter functions. "
+        "Here it drives Thinking Slow, writing each answer and then calling Granite "
+        "Switch's UQ adapter by name to score it. "
+        "[mellea.ai](https://mellea.ai) · "
+        "[GitHub](https://github.com/generative-computing/mellea) · "
+        "[IBM Research blog](https://research.ibm.com/blog/generative-computing-mellea)"
     )
     with gr.Row():
         with gr.Column():
@@ -787,9 +800,6 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             timing = gr.Markdown()
             jev_timing = gr.Markdown()
     gr.Markdown(
-        "Note: in Thinking Slow, the uncertainty adapter scores ten bins (0.05, 0.15, "
-        "… 0.95), and Granite Certainty is the probability-weighted average of those "
-        "bins, so it always falls between 0.05 and 0.95.\n\n"
         f"**Hardware:** Granite Switch is served by vLLM on {GRANITE_HARDWARE}, on a "
         "Hugging Face Inference Endpoint. Both modes run on that one GPU. Both "
         "times are full round trips. The endpoint scales to zero after 15 idle "
