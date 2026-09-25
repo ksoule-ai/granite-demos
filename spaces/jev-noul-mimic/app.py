@@ -505,7 +505,7 @@ def compare(state_text: str, questions_text: str):
     )
     styled = table.style.format(
         lambda v: "—" if pd.isna(v) else f"{v:g}", subset=["Granite noul", JEV_COLUMN]
-    ).map(lambda _: JEV_CELL_STYLE, subset=[JEV_COLUMN])
+    )
 
     jev_timing = _jev_timing_md(jev, jev_s, jev_status)
     fanout = granite[1:]
@@ -541,10 +541,7 @@ OUTPUT_HEADERS = {
     "certainty in it. Built with Mellea.",
 }
 IDLE_HEADER = "### Results\nPick a kind of thinking to start."
-# Everything Jev is light grey, via one CSS variable defined per theme (see CSS),
-# so the reference recedes behind Granite's results.
 JEV_COLUMN = "Jev noul (reference)"
-JEV_CELL_STYLE = "color: var(--jev-color);"
 
 
 def _fmt_time(ms: float) -> str:
@@ -614,20 +611,20 @@ def _stats_html(
 
 
 def _slow_table(questions: list[str], results: list, jev: list[float] | None):
-    """Thinking Slow table: response, its certainty, and Jev's noul (grey)."""
+    """Thinking Slow table: response, its certainty, and Jev's noul as a reference."""
     table = pd.DataFrame(
         {
             "Question": questions,
             "Granite response": [r.answer if r else "…" for r in results],
-            "Certainty": pd.Series([r.certainty if r else None for r in results], dtype=object),
+            "Granite Certainty": pd.Series([r.certainty if r else None for r in results], dtype=object),
             JEV_COLUMN: pd.Series(
                 [None if jev is None else jev[i] for i in range(len(questions))], dtype=object
             ),
         }
     )
     return table.style.format(
-        lambda v: "…" if v is None or pd.isna(v) else f"{v:g}", subset=["Certainty", JEV_COLUMN]
-    ).map(lambda _: JEV_CELL_STYLE, subset=[JEV_COLUMN])
+        lambda v: "…" if v is None or pd.isna(v) else f"{v:g}", subset=["Granite Certainty", JEV_COLUMN]
+    )
 
 
 def _jev_timing_md(jev: list[float] | None, jev_s: float, jev_status: str) -> str:
@@ -712,13 +709,9 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-# Light grey for everything Jev, so the reference stays quiet next to Granite's
-# results, plus the big end-to-end time tiles. Selectors are our own classes,
-# not Gradio internals.
+# Soft yellow example boxes and the big end-to-end time tiles. Selectors are
+# our own ids and classes, not Gradio internals.
 CSS = """
-:root { --jev-color: #9ca3af; }
-.dark { --jev-color: #7d8590; }
-.jev-metric, .jev-metric * { color: var(--jev-color) !important; }
 /* Example boxes: soft light yellow so they stand out (softer in dark mode). */
 :root { --example-bg: #fff8d6; --example-bg-hover: #ffefad; --example-border: #f1e2a0; }
 .dark { --example-bg: #3a3522; --example-bg-hover: #4a4329; --example-border: #5c5230; }
@@ -727,23 +720,15 @@ CSS = """
   border: 1px solid var(--example-border) !important;
 }
 #examples button:hover { background: var(--example-bg-hover) !important; }
-/* The Jev column header (3rd column) in the Thinking Fast table. The cells
-   are greyed by the pandas Styler; headers can't be, so match the ARIA index. */
-#fast-table th[aria-colindex="3"], #fast-table th[aria-colindex="3"] *,
-#slow-table th[aria-colindex="4"], #slow-table th[aria-colindex="4"] * {
-  color: var(--jev-color) !important;
-}
 .e2e-row { display: flex; gap: var(--spacing-lg); margin: var(--spacing-md) 0; }
 .e2e-tile {
   flex: 1; padding: var(--spacing-lg) var(--spacing-xl);
   border-radius: var(--radius-lg); background: var(--background-fill-secondary);
   border: 2px solid var(--color-accent);
 }
-.e2e-tile.reference { border: 2px dashed var(--jev-color); }
-.e2e-tile.reference .e2e-value, .e2e-tile.reference .e2e-label { color: var(--jev-color); }
-.e2e-tile.agreement { border: 2px solid var(--border-color-primary); }
+.e2e-tile.reference, .e2e-tile.agreement { border: 2px solid var(--border-color-primary); }
 .e2e-value { font-size: 2.4rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.e2e-label { font-size: 0.9rem; opacity: 0.75; margin-top: 2px; }
+.e2e-label { font-size: 0.9rem; margin-top: 2px; }
 """
 
 
@@ -781,9 +766,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "- **Optimized vLLM kernels.** Granite Switch's vLLM integration, with "
         "kernels optimized by the Granite team, applies adapter weights per token "
         "position rather than per request, so adapter and base-model requests "
-        "share batches and one KV cache. "
-        "[aLoRA vs LoRA live race](https://generative-computing.github.io/granite-switch/race_live.html) · "
-        "[vLLM](https://github.com/vllm-project/vllm)"
+        "share batches and one KV cache."
     )
     # The inputs are created first but placed further down, so the examples can
     # sit right under the intro. They start with the first example filled in.
@@ -828,7 +811,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             )
             slow_table = gr.Dataframe(
                 elem_id="slow-table",
-                headers=["Question", "Granite response", "Certainty", JEV_COLUMN],
+                headers=["Question", "Granite response", "Granite Certainty", JEV_COLUMN],
                 datatype=["str", "str", "number", "number"],
                 column_widths=["22%", "48%", "12%", "18%"],
                 interactive=False,
@@ -838,7 +821,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             with gr.Accordion("Raw JSON (Thinking Slow)", open=False, visible=False) as raw_json:
                 slow_json = gr.JSON(show_label=False)
             timing = gr.Markdown()
-            jev_timing = gr.Markdown(elem_classes="jev-metric")
+            jev_timing = gr.Markdown()
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
         "the noul is the probability-weighted average of those bins, so the "
