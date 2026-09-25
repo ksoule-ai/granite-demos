@@ -681,6 +681,11 @@ CSS = """
   border: 1px solid var(--example-border) !important;
 }
 #examples button:hover, #examples-slow button:hover { background: var(--example-bg-hover) !important; }
+/* Thinking Slow table: top-align every cell. Gradio centers each cell's
+   content vertically, which floats short text beside long answers. Visible
+   cells are role="gridcell" (a virtualized grid), so match the ARIA role. */
+#slow-table [role="gridcell"],
+#slow-table [role="gridcell"] .cell-wrap { align-items: flex-start !important; }
 .e2e-row { display: flex; gap: var(--spacing-lg); margin: var(--spacing-md) 0; }
 .e2e-tile {
   flex: 1; padding: var(--spacing-lg) var(--spacing-xl);
