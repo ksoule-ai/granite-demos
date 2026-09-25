@@ -11,7 +11,7 @@ pinned: false
 license: apache-2.0
 models:
   - ibm-granite/granite-switch-4.1-3b-preview
-short_description: Open-model nouls (Granite Switch + Mellea) next to Jev's
+short_description: Open-model nouls (Granite Switch) next to Jev's
 ---
 
 # Granite Switch nouls vs. Jev
@@ -28,9 +28,8 @@ same input.
 
 Granite Switch runs on vLLM on a Hugging Face Inference Endpoint (see the
 [granite-demos README](https://github.com/ksoule-ai/granite-demos#readme) for
-how that endpoint is built). Mellea talks to it through
-`OpenAIBackend(load_embedded_adapters=True)`, which selects each embedded
-adapter by name on the request.
+how that endpoint is built). The Space calls it with the OpenAI client and
+selects the embedded adapter by name through `chat_template_kwargs`.
 
 Granite never answers the question itself. For each question it makes one
 call: the assistant turn is prefilled with "Yes." and Granite Switch's
@@ -38,8 +37,29 @@ embedded `uncertainty` adapter scores it. That certainty, c(yes), is the
 probability of yes, which is the noul.
 
 The adapter scores ten bins (0.05, 0.15, … 0.95) for how likely the
-prefilled answer is to be correct, and Mellea returns the probability-weighted
-average of those bins, so the noul always falls between 0.05 and 0.95.
+prefilled answer is to be correct, and the noul is the probability-weighted
+average of those bins, so it always falls between 0.05 and 0.95.
+
+## One generated token per question
+
+The adapter always replies `{"score": "N"}`, where the digit N is the only
+part that carries information. That reply is 7 tokens, and on an L4 each
+generated token costs about 33 ms. So the request prefills the adapter's reply
+up to the digit (`{"score": "`) and asks vLLM to continue it
+(`continue_final_message`). The model generates exactly one token, and its
+top-10 logprobs give the certainty: keep the digit candidates, renormalize,
+and take the expected value of their mapped certainties.
+
+This is the same conversation and decoding that Mellea's
+`core.check_certainty` uses, minus the 6 fixed tokens. The adapter's settings
+(invocation text, score field, digit-to-certainty mapping) are read from the
+model repo's `io_configs/uncertainty/io.yaml`, the file Mellea reads too.
+Measured on an L4 over 34 questions:
+
+| | Mellea `check_certainty` path | 1-token path |
+|---|---|---|
+| Median latency per call | 281 ms | 72 ms |
+| Certainty difference | — | median 0.0014, max 0.0088 |
 
 ## Batching on the endpoint
 
@@ -59,17 +79,13 @@ vLLM's prefix cache compute the state once and reuse it for every question:
 1. **Prime.** The first question goes alone, so vLLM computes and caches the
    shared prefix. Requests scheduled in the same step can't share blocks that
    are still being computed, so priming beats sending everything at once.
-2. **Fan out.** The remaining questions go concurrently (one thread each;
-   Mellea's sync calls share a single background event loop, so the requests
-   overlap). vLLM batches them, and each only reads its own question and the
-   "Yes." turn.
+2. **Fan out.** The remaining questions go concurrently (one thread each,
+   sharing one OpenAI client). vLLM batches them, and each only reads its own
+   question and the "Yes." turn.
 
 The page reports vLLM's `cached_tokens` for the fan-out, so the reuse is
 visible. vLLM caches in 16-token blocks, so a state shorter than one block
 gets no reuse.
-
-The adapter call goes through `mfuncs.act` with an `Intrinsic`, the same path
-`core.check_certainty` uses, so the token usage on the model output is kept.
 
 ## Warm start
 

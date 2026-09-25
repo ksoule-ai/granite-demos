@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Granite Switch + Mellea vs. Jev: side-by-side nouls.
+"""Granite Switch vs. Jev: side-by-side nouls.
 
 Jev (TypeSafe AI's "System One" model) answers yes/no questions about a
 piece of state with a *noul*: one calibrated number in [0, 1], the
@@ -10,8 +10,12 @@ Hugging Face Inference Endpoint, without ever asking Granite for its own
 answer:
 
 1. Prefill the assistant turn with "Yes." and run Granite Switch's embedded
-   ``uncertainty`` adapter through Mellea.
+   ``uncertainty`` adapter on it.
 2. Its certainty that "Yes." is correct, c(yes), is P(yes): the noul.
+
+The adapter call is the conversation Mellea's ``check_certainty`` sends, trimmed
+so vLLM generates one token (the score digit) instead of the full JSON reply;
+see ``granite_noul``.
 
 The same state and questions go to the real Jev model via OpenRouter (nouls
 only), and the two sets of numbers are shown side by side.
@@ -34,6 +38,7 @@ vLLM's ``cached_tokens`` usage is reported so the cache hits are visible.
 """
 
 import json
+import math
 import os
 import threading
 import time
@@ -42,15 +47,9 @@ from dataclasses import dataclass
 
 import gradio as gr
 import httpx
-
-from mellea import ModelOption
-from mellea.backends.adapters import AdapterType
-from mellea.backends.openai import OpenAIBackend
-from mellea.formatters import TemplateFormatter
-from mellea.stdlib import functional as mfuncs
-from mellea.stdlib.components import Message
-from mellea.stdlib.components.intrinsic.intrinsic import Intrinsic
-from mellea.stdlib.context import ChatContext
+import yaml
+from huggingface_hub import hf_hub_download
+from openai import OpenAI
 from typesafe_sdk import Noul, TypeSafeClient, TypeSafeError
 
 from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS
@@ -72,16 +71,19 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api"
 JEV_MODEL = os.environ.get("JEV_MODEL", "jev-1.13")
 MAX_QUESTIONS = 8
 
-# load_embedded_adapters fetches only the adapters' I/O configs from the Hub;
-# the adapter weights are already inside the served model.
-backend = OpenAIBackend(
-    model_id=MODEL_ID,
-    formatter=TemplateFormatter(model_id=MODEL_ID),
-    base_url=ENDPOINT_URL,
-    api_key=HF_TOKEN,
-    load_embedded_adapters=True,
-)
-UNCERTAINTY = backend.resolve_adapter("uncertainty")
+client = OpenAI(base_url=ENDPOINT_URL, api_key=HF_TOKEN)
+
+# The uncertainty adapter's I/O config ships in the model repo (it's the same
+# file Mellea's check_certainty reads). It defines the invocation text, the
+# JSON field the adapter writes, and how each score digit maps to a certainty.
+_io = yaml.safe_load(open(hf_hub_download(MODEL_ID, "io_configs/uncertainty/io.yaml")))
+_likelihood = next(t for t in _io["transformations"] if t["type"] == "likelihood")
+UNCERTAINTY_INVOCATION = _io["instruction"]  # "<certainty>"
+SCORE_VALUES = {str(k): float(v) for k, v in _likelihood["categories_to_values"].items()}
+# The adapter always answers {"score": "<digit>"}. Prefilling everything up to
+# the digit means the model generates exactly one token.
+SCORE_PREFIX = '{"' + _likelihood["input_path"][0] + '": "'
+TOP_LOGPROBS = 10  # same as Mellea's likelihood decoding
 
 
 def _question_prompt(state: str, question: str) -> str:
@@ -108,7 +110,7 @@ def _parse_questions(text: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Granite Switch + Mellea
+# Granite Switch
 # --------------------------------------------------------------------------- #
 
 
@@ -211,37 +213,58 @@ warmer = EndpointWarmer()
 def granite_noul(state: str, question: str) -> Certainty:
     """c(yes) for one question: the uncertainty adapter on a prefilled "Yes."
 
-    This is the same call ``core.check_certainty`` makes, done through
-    ``mfuncs.act`` directly so the model output's token usage (including
-    vLLM's ``cached_tokens``) isn't thrown away.
+    Same conversation Mellea's ``check_certainty`` sends (question, "Yes.",
+    then the ``<certainty>`` invocation), with one change: the adapter's reply
+    is prefilled up to the score digit and continued, so vLLM generates a
+    single token instead of the full ``{"score": "N"}`` (7 tokens). The
+    certainty is then decoded from that token's top logprobs the way Mellea's
+    likelihood rule does it: keep the digit candidates, renormalize, and take
+    the expected value of their mapped certainties.
     """
-    ctx = (
-        ChatContext()
-        .add(Message("user", _question_prompt(state, question)))
-        .add(Message("assistant", "Yes."))
+    response = client.chat.completions.create(
+        model=MODEL_ID,
+        messages=[
+            {"role": "user", "content": _question_prompt(state, question)},
+            {"role": "assistant", "content": "Yes."},
+            {"role": "user", "content": UNCERTAINTY_INVOCATION},
+            {"role": "assistant", "content": SCORE_PREFIX},
+        ],
+        max_tokens=1,
+        temperature=0.0,
+        logprobs=True,
+        top_logprobs=TOP_LOGPROBS,
+        extra_body={
+            "chat_template_kwargs": {"adapter_name": "uncertainty"},
+            "continue_final_message": True,
+            "add_generation_prompt": False,
+        },
     )
-    out, _ = mfuncs.act(
-        Intrinsic("uncertainty", adapter_types=(AdapterType.ALORA, AdapterType.LORA)),
-        ctx,
-        backend,
-        model_options={ModelOption.TEMPERATURE: 0.0},
-        tool_calls=True,
-        strategy=None,
-    )
-    usage = out.generation.usage or {}
-    details = usage.get("prompt_tokens_details") or {}
+    top = response.choices[0].logprobs.content[0]
+    candidates = [(top.token, top.logprob)] + [
+        (t.token, t.logprob) for t in top.top_logprobs if t.token != top.token
+    ]
+    weighted = [
+        (SCORE_VALUES[tok.strip()], math.exp(lp))
+        for tok, lp in candidates
+        if tok.strip() in SCORE_VALUES
+    ]
+    if not weighted:
+        raise ValueError(f"Uncertainty adapter returned no score digit (got {top.token!r}).")
+    total = sum(p for _, p in weighted)
+    usage = response.usage
+    details = usage.prompt_tokens_details if usage else None
     return Certainty(
-        noul=float(UNCERTAINTY.io_contract.parse(out.value)["certainty"]),
-        prompt_tokens=usage.get("prompt_tokens", 0),
-        cached_tokens=details.get("cached_tokens") or 0,
+        noul=sum(v * p for v, p in weighted) / total,
+        prompt_tokens=usage.prompt_tokens if usage else 0,
+        cached_tokens=(details.cached_tokens or 0) if details else 0,
     )
 
 
 def granite_nouls(state: str, questions: list[str]) -> tuple[list[Certainty], dict]:
     """Prime the shared prefix with one question, then fan out the rest.
 
-    Mellea's sync calls share one background event loop, so the fan-out
-    threads put their requests on the wire together and vLLM batches them.
+    The fan-out threads share one OpenAI client (one HTTP connection pool), so
+    their requests reach vLLM together and it batches them.
     """
     t0 = time.perf_counter()
     first = granite_noul(state, questions[0])
@@ -322,10 +345,10 @@ def compare(state_text: str, questions_text: str):
         if fanout_prompt
         else "single question, nothing to share"
     )
-    wake_note = f" · waited {wake_s:.0f} s for the endpoint to wake (not counted)" if wake_s > 1 else ""
+    wake_note = f" · waited {wake_s:.0f} s for the endpoint to wake (not counted)" if wake_s > 5 else ""
     timing = (
         f"{jev_line}  \n"
-        f"**Granite Switch + Mellea:** {g_time['total_s'] * 1000:.0f} ms end to end "
+        f"**Granite Switch:** {g_time['total_s'] * 1000:.0f} ms end to end "
         f"for {len(questions)} question(s) · `{MODEL_ID}` on vLLM{wake_note}  \n"
         f"Batching: prime 1 question {g_time['prime_s'] * 1000:.0f} ms "
         f"({granite[0].prompt_tokens} prompt tokens), then {len(fanout)} in parallel "
@@ -345,13 +368,14 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
         "# Granite Switch nouls vs. Jev\n"
         "[Jev](https://docs.typesafe.ai) is TypeSafe AI's *System One* model. A "
         "**noul** is its yes/no primitive: one calibrated probability that the "
-        "answer is yes. This Space rebuilds that primitive from open parts, "
-        "[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview) "
-        "and [Mellea](https://mellea.ai), and compares the two on the same input.\n\n"
+        "answer is yes. This Space rebuilds that primitive with an open model, "
+        "[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview), "
+        "and compares the two on the same input.\n\n"
         "**How the Granite side works:** Granite never answers the question itself. "
-        "Instead, Mellea prefills the answer as \"Yes.\" and runs Granite Switch's "
-        "embedded `uncertainty` adapter on it. The adapter's certainty that yes is "
-        "correct, c(yes), is the noul."
+        "Instead, the answer is prefilled as \"Yes.\" and Granite Switch's embedded "
+        "`uncertainty` adapter scores it. The adapter's certainty that yes is "
+        "correct, c(yes), is the noul. Only the adapter's score digit is generated "
+        "(one token), and its probabilities give the certainty."
     )
     with gr.Row():
         with gr.Column():
@@ -382,7 +406,7 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
     gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
-        "Mellea returns the probability-weighted average of those bins, so the "
+        "the noul is the probability-weighted average of those bins, so the "
         "Granite noul always falls between 0.05 and 0.95. Both times are full round "
         "trips. The Granite endpoint scales to zero after 15 idle minutes; opening "
         "this page starts waking it, and any wait isn't counted in Granite's time."
