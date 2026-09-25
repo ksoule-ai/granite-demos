@@ -116,7 +116,7 @@ gets no reuse.
 
 ## The Thinking toggle
 
-A **Thinking** toggle at the top of the page switches between **⚡ Thinking
+A **Thinking** toggle above the State box switches between **⚡ Thinking
 Fast** and **🐢 Thinking Slow**. Switching it shows that mode's examples, loads
 its default example into the inputs, relabels the questions box and the run
 button (**⚡ Think Fast** / **🐢 Think Slow**), and resets the results panel,
@@ -134,8 +134,8 @@ no.
   doesn't generate text, so it isn't called here: the Jev time and agreement
   tiles stay in place but read **N/A**.
 
-Each mode has its own example set, shown above the inputs when that mode is
-selected: yes/no questions for Thinking Fast, and open-ended questions
+Each mode has its own example set, shown under the run button when that mode
+is selected: yes/no questions for Thinking Fast, and open-ended questions
 (summarize, draft a reply, what's still open) for Thinking Slow, on the same
 states.
 

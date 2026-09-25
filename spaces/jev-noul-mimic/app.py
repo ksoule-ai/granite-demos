@@ -727,46 +727,41 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "position rather than per request, so adapter and base-model requests "
         "share batches and one KV cache."
     )
-    # The Thinking toggle sits right under the intro; switching it swaps the
-    # examples and loads that mode's default example.
-    mode = gr.Radio(
-        choices=[("⚡ Thinking Fast", "fast"), ("🐢 Thinking Slow", "slow")],
-        value="fast",
-        label="Thinking",
-        elem_id="thinking-toggle",
-    )
-    # The inputs are created first but placed further down, so the examples can
-    # sit above them. They start with the Thinking Fast default example.
-    state = gr.Textbox(
-        label="State (text or JSON)",
-        value=EXAMPLE_INPUTS[0][0],
-        lines=6,
-        max_lines=18,
-        placeholder="The input the models think about.",
-        render=False,
-    )
-    questions = gr.Textbox(
-        label=QUESTION_LABELS["fast"],
-        value=EXAMPLE_INPUTS[0][1],
-        lines=5,
-        placeholder=QUESTION_PLACEHOLDERS["fast"],
-        render=False,
-    )
-    with gr.Column(visible=True) as fast_examples:
-        gr.Examples(
-            EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
-            label="Examples (yes/no questions)", elem_id="examples",
-        )
-    with gr.Column(visible=False) as slow_examples:
-        gr.Examples(
-            SLOW_EXAMPLE_INPUTS, inputs=[state, questions], example_labels=SLOW_EXAMPLE_LABELS,
-            label="Examples (open-ended questions)", elem_id="examples-slow",
-        )
     with gr.Row():
         with gr.Column():
-            state.render()
-            questions.render()
+            # Left column: the Thinking toggle over the inputs, the run button,
+            # then that mode's examples. Switching the toggle swaps the examples
+            # and loads the mode's default example.
+            mode = gr.Radio(
+                choices=[("⚡ Thinking Fast", "fast"), ("🐢 Thinking Slow", "slow")],
+                value="fast",
+                label="Thinking",
+                elem_id="thinking-toggle",
+            )
+            state = gr.Textbox(
+                label="State (text or JSON)",
+                value=EXAMPLE_INPUTS[0][0],
+                lines=6,
+                max_lines=18,
+                placeholder="The input the models think about.",
+            )
+            questions = gr.Textbox(
+                label=QUESTION_LABELS["fast"],
+                value=EXAMPLE_INPUTS[0][1],
+                lines=5,
+                placeholder=QUESTION_PLACEHOLDERS["fast"],
+            )
             run = gr.Button(RUN_LABELS["fast"], variant="primary")
+            with gr.Column(visible=True) as fast_examples:
+                gr.Examples(
+                    EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
+                    label="Examples (yes/no questions)", elem_id="examples",
+                )
+            with gr.Column(visible=False) as slow_examples:
+                gr.Examples(
+                    SLOW_EXAMPLE_INPUTS, inputs=[state, questions], example_labels=SLOW_EXAMPLE_LABELS,
+                    label="Examples (open-ended questions)", elem_id="examples-slow",
+                )
             endpoint_status = gr.Markdown(warmer.status())
         with gr.Column():
             output_header = gr.Markdown(OUTPUT_HEADERS["fast"] + "\n\nPress **" + RUN_LABELS["fast"] + "** to start.")
