@@ -373,7 +373,7 @@ def think_slow(state_text: str, questions: list[str]):
 
     jev_line = "**Jev:** N/A. Jev returns decisions only; it doesn't generate text."
     while not all(s.done for s in slots):
-        yield _slow_rows(questions, slots), f"{jev_line}  \n**Granite Switch (thinking slow):** writing…"
+        yield _slow_rows(questions, slots), f"{jev_line}  \n**Granite Switch (Thinking Slow):** writing…"
         time.sleep(0.25)
     total_s = time.perf_counter() - t0
     warmer.touch()
@@ -392,7 +392,7 @@ def think_slow(state_text: str, questions: list[str]):
     wake_note = f" · waited {wake_s:.0f} s for the endpoint to wake (not counted)" if wake_s > 5 else ""
     timing = (
         f"{jev_line}  \n"
-        f"**Granite Switch (thinking slow):** {total_s:.1f} s for {len(questions)} "
+        f"**Granite Switch (Thinking Slow):** {total_s:.1f} s for {len(questions)} "
         f"answer(s), {generated} tokens generated · first token {first} · `{MODEL_ID}` "
         f"base model, same endpoint, on {GRANITE_HARDWARE}{wake_note}  \n"
         f"Batching: question 1 first, the rest in parallel once its prefix was cached{cache_line}"
@@ -589,16 +589,28 @@ def compare(state_text: str, questions_text: str):
     return rows, timing, warmer.status()
 
 
-FAST_QUESTIONS_LABEL = f"Yes/no questions (one per line, up to {MAX_QUESTIONS})"
-SLOW_QUESTIONS_LABEL = f"Questions, yes/no or free-form (one per line, up to {MAX_QUESTIONS})"
+QUESTIONS_LABEL = f"Questions (one per line, up to {MAX_QUESTIONS})"
+QUESTIONS_INFO = (
+    "Thinking Fast needs yes/no questions. Thinking Slow and Compound Thinking "
+    "take any question."
+)
 
 
 def think(mode: str, state_text: str, questions_text: str):
-    """Run the selected mode.
+    """Run one mode, started by its button.
 
-    Fast: nouls vs Jev. Slow: Granite writes answers. Compound: Granite writes
-    answers and scores each one's certainty, returned as JSON.
+    The first update shows that mode's results panel (and hides the others)
+    and clears the last run's timing, so the page switches the moment the
+    button is clicked. Fast: nouls vs Jev. Slow: Granite writes answers.
+    Compound: Granite writes answers and scores each one's certainty, as JSON.
     """
+    yield (
+        gr.update(visible=mode == "fast"),
+        gr.update(visible=mode == "slow"),
+        gr.update(visible=mode == "compound"),
+        "",
+        gr.skip(),
+    )
     if mode == "fast":
         rows, timing_md, status = compare(state_text, questions_text)
         yield rows, gr.skip(), gr.skip(), timing_md, status
@@ -614,59 +626,22 @@ def think(mode: str, state_text: str, questions_text: str):
             yield gr.skip(), gr.skip(), result_json, timing_md, warmer.status()
 
 
-BUTTON_LABELS = {"fast": "Compare", "slow": "Think slow", "compound": "Think compound"}
+def think_fast(state_text: str, questions_text: str):
+    yield from think("fast", state_text, questions_text)
 
 
-def set_mode(mode: str):
-    fast = mode == "fast"
-    return (
-        gr.update(
-            label=FAST_QUESTIONS_LABEL if fast else SLOW_QUESTIONS_LABEL,
-            placeholder="e.g. Is the customer asking for a refund?"
-            if fast
-            else "e.g. Is the customer asking for a refund? Or: What does the customer want?",
-        ),
-        gr.update(value=BUTTON_LABELS[mode]),
-        gr.update(visible=mode == "fast"),  # nouls table
-        gr.update(visible=mode == "slow"),  # answers table
-        gr.update(visible=mode == "compound"),  # compound JSON
-        "",  # clear the previous run's timing
-    )
+def think_slow_mode(state_text: str, questions_text: str):
+    yield from think("slow", state_text, questions_text)
+
+
+def think_compound_mode(state_text: str, questions_text: str):
+    yield from think("compound", state_text, questions_text)
 
 
 def on_page_load() -> str:
     """Start waking the endpoint as soon as someone opens the page."""
     warmer.ensure()
     return warmer.status()
-
-
-# Style the Thinking radio as a segmented toggle: one pill, equal segments,
-# the selected one in the theme's primary color. The native radio circles are
-# hidden visually but stay in the DOM, so keyboard and screen readers still work.
-CSS = """
-#thinking-toggle .wrap {
-  display: flex; flex-wrap: nowrap; gap: 0; padding: 4px;
-  border: 1px solid var(--border-color-primary); border-radius: 999px;
-  background: var(--background-fill-secondary);
-}
-#thinking-toggle label {
-  flex: 1; justify-content: center; border: none; box-shadow: none;
-  border-radius: 999px; background: transparent; padding: 8px 16px;
-  font-weight: 600; transform: none;
-}
-#thinking-toggle label:hover { background: var(--background-fill-primary); }
-#thinking-toggle label.selected {
-  background: var(--button-primary-background-fill);
-  color: var(--button-primary-text-color);
-}
-#thinking-toggle input[type=radio] {
-  position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0;
-}
-#thinking-toggle label > span { margin-left: 0; }
-#thinking-toggle label:has(input:focus-visible) {
-  outline: 2px solid var(--color-accent); outline-offset: 2px;
-}
-"""
 
 
 with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
@@ -677,9 +652,9 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "[Jev](https://docs.typesafe.ai): instead of text, Jev answers a yes/no "
         "question with a **noul**, the probability that the answer is yes.\n\n"
         "One open 3B model, Granite Switch, does both from a single endpoint:\n"
-        "- **⚡ Thinking fast:** a yes/no call as a noul, one generated token per "
+        "- **⚡ Thinking Fast:** a yes/no call as a noul, one generated token per "
         "question, side by side with Jev.\n"
-        "- **🐢 Thinking slow:** a written answer, like any LLM. Jev returns "
+        "- **🐢 Thinking Slow:** a written answer, like any LLM. Jev returns "
         "decisions only; it doesn't generate text.\n"
         "- **🧠 Compound Thinking:** a written answer plus Granite's certainty in "
         "it, returned as JSON, built with [Mellea](https://mellea.ai).\n\n"
@@ -709,20 +684,6 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
     )
     with gr.Row():
         with gr.Column():
-            mode = gr.Radio(
-                choices=[
-                    ("⚡ Thinking fast", "fast"),
-                    ("🐢 Thinking slow", "slow"),
-                    ("🧠 Compound Thinking", "compound"),
-                ],
-                value="fast",
-                label="Thinking",
-                info=(
-                    "Fast: yes/no questions, nouls vs Jev. Slow: Granite writes answers. "
-                    "Compound Thinking: Granite writes answers and scores its certainty in each, as JSON."
-                ),
-                elem_id="thinking-toggle",
-            )
             state = gr.Textbox(
                 label="State (text or JSON)",
                 lines=6,
@@ -730,11 +691,15 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
                 placeholder="The input the models think about.",
             )
             questions = gr.Textbox(
-                label=FAST_QUESTIONS_LABEL,
+                label=QUESTIONS_LABEL,
+                info=QUESTIONS_INFO,
                 lines=5,
                 placeholder="e.g. Is the customer asking for a refund?",
             )
-            run = gr.Button("Compare", variant="primary")
+            with gr.Row():
+                fast_btn = gr.Button("⚡ Thinking Fast", variant="primary")
+                slow_btn = gr.Button("🐢 Thinking Slow", variant="primary")
+                compound_btn = gr.Button("🧠 Compound Thinking", variant="primary")
             endpoint_status = gr.Markdown(warmer.status())
         with gr.Column():
             fast_table = gr.Dataframe(
@@ -764,20 +729,14 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "minutes; opening this page starts waking it, and any wait isn't counted in "
         "Granite's time."
     )
-    mode.change(
-        set_mode,
-        inputs=mode,
-        outputs=[questions, run, fast_table, slow_table, compound_json, timing],
-        show_progress="hidden",
-    )
-    run.click(
-        think,
-        inputs=[mode, state, questions],
-        outputs=[fast_table, slow_table, compound_json, timing, endpoint_status],
-    )
+    # Each button starts its own kind of thinking straight away.
+    run_outputs = [fast_table, slow_table, compound_json, timing, endpoint_status]
+    fast_btn.click(think_fast, [state, questions], run_outputs, api_name="think_fast")
+    slow_btn.click(think_slow_mode, [state, questions], run_outputs, api_name="think_slow")
+    compound_btn.click(think_compound_mode, [state, questions], run_outputs, api_name="think_compound")
     # Wake on page load, and keep the status line current while it wakes.
     demo.load(on_page_load, outputs=endpoint_status, show_progress="hidden")
     gr.Timer(3).tick(warmer.status, outputs=endpoint_status, show_progress="hidden", queue=False)
 
 if __name__ == "__main__":
-    demo.launch(css=CSS)
+    demo.launch()

@@ -24,9 +24,9 @@ with a **noul**, the probability that the answer is yes.
 One open 3B model, Granite Switch, does both from a single endpoint, next to
 Jev (via [OpenRouter](https://openrouter.ai/typesafe)) on the same input:
 
-- **⚡ Thinking fast:** a yes/no call as a noul, one generated token per
+- **⚡ Thinking Fast:** a yes/no call as a noul, one generated token per
   question, side by side with Jev.
-- **🐢 Thinking slow:** a written answer, like any LLM. Jev returns decisions
+- **🐢 Thinking Slow:** a written answer, like any LLM. Jev returns decisions
   only; it doesn't generate text.
 - **🧠 Compound Thinking:** a written answer plus Granite's certainty in it,
   returned as JSON, built with [Mellea](https://mellea.ai).
@@ -122,20 +122,22 @@ The page reports vLLM's `cached_tokens` for the fan-out, so the reuse is
 visible. vLLM caches in 16-token blocks, so a state shorter than one block
 gets no reuse.
 
-## Thinking slow
+## Thinking Slow
 
-The **Thinking** toggle switches the page between two modes on the same state:
+Three buttons under the questions each start a different kind of thinking on
+the same state, straight away: **⚡ Thinking Fast**, **🐢 Thinking Slow** and
+**🧠 Compound Thinking** (below). The results panel switches to match.
 
-- **⚡ Fast** (default): yes/no questions. Each gets a Jev noul and a Granite
+- **⚡ Thinking Fast**: yes/no questions. Each gets a Jev noul and a Granite
   noul, as described above.
-- **🐢 Slow**: the same yes/no questions, or any free-form question you type.
+- **🐢 Thinking Slow**: the same yes/no questions, or any free-form question you type.
   Granite's base model, with no adapter, writes an answer to each, streamed as
   it's generated, so you can read its reasoning next to the noul it gave in
   fast mode. The Jev column shows **N/A**, because Jev returns decisions only
   and doesn't generate text.
 
-All preset examples use yes/no questions, so the same example works in both
-modes.
+All preset examples use yes/no questions, so the same example works with every
+button.
 
 Both modes hit the same endpoint and the same weights. The slow prompt is just
 the state, then the question, with no instruction added. The state still comes
