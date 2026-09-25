@@ -36,7 +36,6 @@ vLLM's ``cached_tokens`` usage is reported so the cache hits are visible.
 import json
 import math
 import os
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -56,7 +55,7 @@ from mellea.stdlib import functional as mfuncs
 from mellea.stdlib.components.intrinsic import core
 from mellea.stdlib.context import ChatContext
 
-from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS
+from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS, SLOW_EXAMPLE_INPUTS, SLOW_EXAMPLE_LABELS
 
 # Granite Switch endpoint (vLLM, OpenAI-compatible). HF_ENDPOINT_URL ends in /v1.
 ENDPOINT_URL = os.environ["HF_ENDPOINT_URL"].rstrip("/")
@@ -454,7 +453,7 @@ def compare(state_text: str, questions_text: str):
 
 
 QUESTIONS_LABEL = f"Questions (one per line, up to {MAX_QUESTIONS})"
-QUESTIONS_INFO = "Thinking Fast needs yes/no questions. Thinking Slow takes any question."
+QUESTIONS_INFO = "Thinking Fast needs yes/no questions. Thinking Slow takes open-ended questions."
 
 
 OUTPUT_HEADERS = {
@@ -471,16 +470,10 @@ def _fmt_time(ms: float) -> str:
     return f"{ms:.0f} ms" if ms < 1000 else f"{ms / 1000:.1f} s"
 
 
-def _verdict(text: str | None) -> bool | None:
-    """Yes/no from a written response's opening word; None if it has neither."""
-    m = re.match(r"\W*(yes|no)\b", text or "", re.IGNORECASE)
-    return None if m is None else m.group(1).lower() == "yes"
-
-
 def _agreement(granite_yes: list[bool | None], jev: list[float] | None) -> dict | None:
-    """How often Granite's yes/no matches Jev's (Jev yes = noul > 0.5).
+    """How often Granite's yes/no (noul > 0.5) matches Jev's (Jev yes = noul > 0.5).
 
-    Questions where Granite gave no clear yes/no are skipped and counted.
+    None entries (no clear Granite yes/no) are skipped and counted.
     """
     if jev is None:
         return None
@@ -500,8 +493,13 @@ def _stats_html(
     show_jev: bool = False,
     agreement: dict | None = None,
     show_agreement: bool = False,
+    jev_na: bool = False,
 ) -> str:
-    """Big tiles: Granite and Jev end-to-end times, and agreement with Jev."""
+    """Big tiles: Granite and Jev end-to-end times, and agreement with Jev.
+
+    With jev_na (Thinking Slow, where Jev isn't called), the Jev and
+    agreement tiles stay in place but read N/A.
+    """
     tiles = [
         '<div class="e2e-tile granite"><div class="e2e-value">'
         f"{_fmt_time(granite_ms) if granite_ms is not None else '…'}</div>"
@@ -510,11 +508,13 @@ def _stats_html(
     if show_jev:
         tiles.append(
             '<div class="e2e-tile reference"><div class="e2e-value">'
-            f"{_fmt_time(jev_ms) if jev_ms is not None else '—'}</div>"
+            f"{'N/A' if jev_na else _fmt_time(jev_ms) if jev_ms is not None else '—'}</div>"
             '<div class="e2e-label">Jev · reference · end to end</div></div>'
         )
     if show_agreement:
-        if agreement and agreement["jev_yes"] + agreement["jev_no"]:
+        if jev_na:
+            value, label = "N/A", "agreement with Jev"
+        elif agreement and agreement["jev_yes"] + agreement["jev_no"]:
             a = agreement
             matched, total = a["yes_match"] + a["no_match"], a["jev_yes"] + a["jev_no"]
             value = f"{matched / total:.0%}"
@@ -533,20 +533,17 @@ def _stats_html(
     return f'<div class="e2e-row">{"".join(tiles)}</div>'
 
 
-def _slow_table(questions: list[str], results: list, jev: list[float] | None):
-    """Thinking Slow table: response, its certainty, and Jev's noul as a reference."""
+def _slow_table(questions: list[str], results: list):
+    """Thinking Slow table: each response and Granite's certainty in it."""
     table = pd.DataFrame(
         {
             "Question": questions,
             "Granite response": [r.answer if r else "…" for r in results],
             "Granite Certainty": pd.Series([r.certainty if r else None for r in results], dtype=object),
-            JEV_COLUMN: pd.Series(
-                [None if jev is None else jev[i] for i in range(len(questions))], dtype=object
-            ),
         }
     )
     return table.style.format(
-        lambda v: "…" if v is None or pd.isna(v) else f"{v:g}", subset=["Granite Certainty", JEV_COLUMN]
+        lambda v: "…" if v is None or pd.isna(v) else f"{v:g}", subset=["Granite Certainty"]
     )
 
 
@@ -570,7 +567,7 @@ def think(mode: str, state_text: str, questions_text: str):
     fast = mode == "fast"
     yield (
         OUTPUT_HEADERS[mode],
-        _stats_html(None, show_jev=True, show_agreement=True),
+        _stats_html(None, show_jev=True, show_agreement=True, jev_na=not fast),
         gr.update(visible=fast, value=None),
         "",
         gr.update(visible=not fast, value=None),
@@ -589,28 +586,17 @@ def think(mode: str, state_text: str, questions_text: str):
     if not state_text.strip():
         raise gr.Error("Enter some state for the model to think about.")
     questions = _parse_questions(questions_text)
-    # Jev answers the same questions as a reference while Granite thinks slow.
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        jev_future = pool.submit(jev_nouls, _parse_state(state_text), questions)
-        for results, timing_md, total_s in think_slow(state_text, questions):
-            if total_s is None:
-                jev_now = jev_future.result()[0] if jev_future.done() else None
-                yield (
-                    gr.skip(), gr.skip(), gr.skip(), gr.skip(),
-                    _slow_table(questions, results, jev_now), timing_md, warmer.status(),
-                )
-                continue
-            jev, jev_s, jev_status = jev_future.result()
-            agreement = _agreement([_verdict(r.answer) for r in results], jev)
-            yield (
-                gr.skip(),
-                _stats_html(total_s * 1000, jev_s * 1000 if jev is not None else None, True, agreement, True),
-                gr.skip(),
-                _jev_timing_md(jev, jev_s, jev_status),
-                _slow_table(questions, results, jev),
-                timing_md,
-                warmer.status(),
-            )
+    # Jev returns decisions only, so it isn't called here; its tiles read N/A.
+    for results, timing_md, total_s in think_slow(state_text, questions):
+        stats = (
+            _stats_html(total_s * 1000, show_jev=True, show_agreement=True, jev_na=True)
+            if total_s is not None
+            else gr.skip()
+        )
+        yield (
+            gr.skip(), stats, gr.skip(), gr.skip(),
+            _slow_table(questions, results), timing_md, warmer.status(),
+        )
 
 
 def think_fast(state_text: str, questions_text: str):
@@ -633,11 +619,11 @@ CSS = """
 /* Example boxes: a light shade of blue so they stand out (muted in dark mode). */
 :root { --example-bg: #e8f2fc; --example-bg-hover: #d6e8fa; --example-border: #c5dcf3; }
 .dark { --example-bg: #1f2d3d; --example-bg-hover: #27394d; --example-border: #34506e; }
-#examples button {
+#examples button, #examples-slow button {
   background: var(--example-bg) !important;
   border: 1px solid var(--example-border) !important;
 }
-#examples button:hover { background: var(--example-bg-hover) !important; }
+#examples button:hover, #examples-slow button:hover { background: var(--example-bg-hover) !important; }
 .e2e-row { display: flex; gap: var(--spacing-lg); margin: var(--spacing-md) 0; }
 .e2e-tile {
   flex: 1; padding: var(--spacing-lg) var(--spacing-xl);
@@ -703,7 +689,12 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         render=False,
     )
     gr.Examples(
-        EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS, elem_id="examples"
+        EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
+        label="Examples · ⚡ Thinking Fast (yes/no questions)", elem_id="examples",
+    )
+    gr.Examples(
+        SLOW_EXAMPLE_INPUTS, inputs=[state, questions], example_labels=SLOW_EXAMPLE_LABELS,
+        label="Examples · 🐢 Thinking Slow (open-ended questions)", elem_id="examples-slow",
     )
     with gr.Row():
         with gr.Column():
@@ -727,9 +718,9 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             )
             slow_table = gr.Dataframe(
                 elem_id="slow-table",
-                headers=["Question", "Granite response", "Granite Certainty", JEV_COLUMN],
-                datatype=["str", "str", "number", "number"],
-                column_widths=["22%", "48%", "12%", "18%"],
+                headers=["Question", "Granite response", "Granite Certainty"],
+                datatype=["str", "str", "number"],
+                column_widths=["24%", "60%", "16%"],
                 interactive=False,
                 wrap=True,
                 visible=False,

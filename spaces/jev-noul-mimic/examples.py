@@ -330,3 +330,37 @@ STRESS = [
 EXAMPLES = SHORT + LONG + STRESS
 EXAMPLE_LABELS = [label for label, _, _ in EXAMPLES]
 EXAMPLE_INPUTS = [[state, questions] for _, state, questions in EXAMPLES]
+
+# Open-ended questions for Thinking Slow, on the same states (the 50-question
+# stress example is yes/no only).
+SLOW_QUESTIONS = {
+    "Short · double charge": (
+        "What does the customer want?\n"
+        "Write a short, empathetic reply to the customer."
+    ),
+    "Short · damaged order (JSON)": (
+        "What went wrong with this order?\n"
+        "What should support do next?"
+    ),
+    "Short · false claim": (
+        "What is wrong with this statement?\n"
+        "Rewrite the statement so it is accurate."
+    ),
+    "Long · ISP support thread": (
+        "Summarize the ticket history in three sentences.\n"
+        "What has Brightline promised the customer so far, and what is still outstanding?\n"
+        "Draft the next reply to Dana."
+    ),
+    "Long · order record + event log (JSON)": (
+        "Summarize what happened to this order.\n"
+        "What is the current status of the return, and what happens next?\n"
+        "How was the address change handled, and was anything missed?"
+    ),
+    "Long · incident report": (
+        "Summarize the incident for an executive audience in three sentences.\n"
+        "Which action items are still open, and who owns them?\n"
+        "What process should have caught this before it reached production?"
+    ),
+}
+SLOW_EXAMPLE_LABELS = [label for label, _, _ in EXAMPLES if label in SLOW_QUESTIONS]
+SLOW_EXAMPLE_INPUTS = [[state, SLOW_QUESTIONS[label]] for label, state, _ in EXAMPLES if label in SLOW_QUESTIONS]

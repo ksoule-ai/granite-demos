@@ -119,25 +119,23 @@ gets no reuse.
 Two buttons under the questions each start a different kind of thinking on the
 same state, straight away: **⚡ Thinking Fast** and **🐢 Thinking Slow**. The
 results panel switches to match, under a header naming the kind of thinking
-that ran. Large tiles under the header show the end-to-end times (Granite's
-and Jev's) side by side, plus **agreement with Jev**: of the
-questions Jev calls yes (noul > 0.5), how many Granite also calls yes, and the
-same for no. Granite's yes/no is its noul > 0.5 in Thinking Fast, and the
-opening "Yes"/"No" of its written response in Thinking Slow; responses without
-a clear yes or no are left out of the count and noted on the tile.
+that ran. Three tiles under the header show Granite's end-to-end time, Jev's
+end-to-end time, and **agreement with Jev**: of the questions Jev calls yes
+(noul > 0.5), how many Granite also calls yes (noul > 0.5), and the same for
+no.
 
 - **⚡ Thinking Fast**: yes/no questions. One table shows Granite's noul and,
   in a **Jev noul (reference)** column, Jev's, as the comparison baseline
   rather than part of the Granite stack.
-- **🐢 Thinking Slow**: the same yes/no questions, or any free-form question
-  you type. Granite writes a response, then scores its own certainty in it
-  (below). The table shows **Question | Granite response | Granite Certainty |
-  Jev noul (reference)**; Jev answers the same questions in parallel as a
-  reference column, since it returns decisions only and doesn't generate
-  text.
+- **🐢 Thinking Slow**: open-ended questions. Granite writes a response, then
+  scores its own certainty in it (below). The table shows **Question |
+  Granite response | Granite Certainty**. Jev returns decisions only and
+  doesn't generate text, so it isn't called here: the Jev time and agreement
+  tiles stay in place but read **N/A**.
 
-All preset examples use yes/no questions, so the same example works with both
-buttons.
+There are two example sets above the inputs, one per button: yes/no questions
+for Thinking Fast, and open-ended questions (summarize, draft a reply, what's
+still open) for Thinking Slow, on the same states.
 
 ## Thinking Slow
 
