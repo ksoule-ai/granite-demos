@@ -21,30 +21,43 @@ call. That's the idea behind *System One* models like TypeSafe AI's
 [Jev](https://docs.typesafe.ai): instead of text, Jev answers a yes/no question
 with a **noul**, the probability that the answer is yes.
 
-This Space gets the same kind of answer from an open 3B model,
-[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview),
-using one generated token per question, and puts it next to Jev (via
-[OpenRouter](https://openrouter.ai/typesafe)) on the same input.
+One open 3B model, Granite Switch, does both from a single endpoint, next to
+Jev (via [OpenRouter](https://openrouter.ai/typesafe)) on the same input:
 
-**What makes it possible:** the **uncertainty (UQ) adapter**. Granite Switch
-has a built-in, calibrated uncertainty-quantification adapter that scores how
-likely an answer is to be correct. Prefill the answer "Yes.", ask the adapter,
-and its certainty *is* the noul.
+- **⚡ Thinking fast:** a yes/no call as a noul, one generated token per
+  question, side by side with Jev.
+- **🐢 Thinking slow:** a written answer, like any LLM. Jev returns decisions
+  only; it doesn't generate text.
+- **🧠 Compound Thinking:** a written answer plus Granite's certainty in it,
+  returned as JSON, built with [Mellea](https://mellea.ai).
 
-**What makes it fast**
+Granite Switch is served by vLLM on **a single NVIDIA L4 GPU (24 GB)**, on a
+Hugging Face Inference Endpoint. All three modes run on that one GPU.
 
-- **aLoRA KV-cache reuse.** The UQ adapter is an activated LoRA: it switches on
-  only at its trigger token and reuses the base model's KV cache for everything
-  before it. Granite reads the input once, and every question reuses that work.
-- **Optimized vLLM kernels.** Granite Switch runs on vLLM with kernels the
-  Granite team optimized for switching between embedded adapters.
-- **One token per question.** Only the adapter's score digit is generated; its
-  probabilities give the certainty.
+### Technologies inside
 
-**And it can think slow, too.** The same endpoint, with the same weights, also
-serves Granite as a regular LLM that explains, drafts and works through
-problems in text. Fast gut calls and slow reasoning from one deployment. Jev
-returns decisions only; it doesn't generate text.
+- **Granite Switch.** One checkpoint that bundles IBM's Granite 4.1 base model
+  with 12 embedded adapter functions (RAG, safety, uncertainty and more), each
+  selected per request by name.
+  [Model card](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview) ·
+  [GitHub](https://github.com/generative-computing/granite-switch) ·
+  [Adapter catalog](https://generative-computing.github.io/granite-switch/adapter_catalog.html)
+- **Uncertainty quantification (UQ) adapter.** A calibrated adapter that scores
+  how likely an answer is to be correct: of the answers it scores at X%, about
+  X% are right. Score a prefilled "Yes." and you get a noul; score Granite's
+  own answer and you get Compound Thinking.
+  [Adapter README](https://huggingface.co/ibm-granite/granitelib-core-r1.0/blob/main/uncertainty/README.md)
+- **aLoRA (activated LoRA).** Adapters that switch on at a trigger token and
+  reuse the base model's KV cache for everything before it, so Granite reads the
+  input once and every question, fast or slow, reuses that work.
+  [Paper (NeurIPS 2025)](https://arxiv.org/abs/2504.12397) ·
+  [Code](https://github.com/IBM/activated-lora)
+- **Optimized vLLM kernels.** Granite Switch's vLLM integration, with kernels
+  optimized by the Granite team, applies adapter weights per token position
+  rather than per request, so adapter and base-model requests share batches and
+  one KV cache.
+  [aLoRA vs LoRA live race](https://generative-computing.github.io/granite-switch/race_live.html) ·
+  [vLLM](https://github.com/vllm-project/vllm)
 
 ## How the Granite side produces a noul
 
@@ -131,9 +144,9 @@ the same way: question 1 runs alone until its first token arrives (so the
 prefix is cached), then the rest stream in parallel. Answers are capped at 512
 tokens.
 
-## Compound thinking
+## Compound Thinking
 
-**🧠 Compound** combines the two: Granite thinks slow, then scores its own
+**🧠 Compound Thinking** combines the two: Granite thinks slow, then scores its own
 answer. It's built with [Mellea](https://mellea.ai), driving the same endpoint
 through `OpenAIBackend(load_embedded_adapters=True)`. For each question:
 

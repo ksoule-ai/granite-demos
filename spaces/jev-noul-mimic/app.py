@@ -66,6 +66,8 @@ from examples import EXAMPLE_INPUTS, EXAMPLE_LABELS
 ENDPOINT_URL = os.environ["HF_ENDPOINT_URL"].rstrip("/")
 HF_TOKEN = os.environ["HF_TOKEN"]
 MODEL_ID = os.environ.get("MODEL_ID", "ibm-granite/granite-switch-4.1-3b-preview")
+# The endpoint's GPU, shown under results. Update if the endpoint's hardware changes.
+GRANITE_HARDWARE = os.environ.get("GRANITE_HARDWARE", "a single NVIDIA L4 GPU (24 GB)")
 # The endpoint scales to zero after 15 idle minutes; the first request after
 # that wakes it (a cold start takes ~3-5 minutes).
 WAKE_TIMEOUT_S = 420
@@ -392,7 +394,7 @@ def think_slow(state_text: str, questions: list[str]):
         f"{jev_line}  \n"
         f"**Granite Switch (thinking slow):** {total_s:.1f} s for {len(questions)} "
         f"answer(s), {generated} tokens generated · first token {first} · `{MODEL_ID}` "
-        f"base model, same endpoint{wake_note}  \n"
+        f"base model, same endpoint ({GRANITE_HARDWARE}){wake_note}  \n"
         f"Batching: question 1 first, the rest in parallel once its prefix was cached{cache_line}"
     )
     yield _slow_rows(questions, slots), timing
@@ -488,7 +490,7 @@ def think_compound(state_text: str, questions: list[str]):
             pending -= done
             if pending:
                 yield _compound_json(questions, results), (
-                    f"{jev_line}  \n**Granite Switch (compound thinking, Mellea):** "
+                    f"{jev_line}  \n**Granite Switch (Compound Thinking, Mellea):** "
                     f"{len(questions) - len(pending)} of {len(questions)} done…"
                 )
                 time.sleep(0.25)
@@ -498,8 +500,8 @@ def think_compound(state_text: str, questions: list[str]):
     wake_note = f" · waited {wake_s:.0f} s for the endpoint to wake (not counted)" if wake_s > 5 else ""
     timing = (
         f"{jev_line}  \n"
-        f"**Granite Switch (compound thinking, Mellea):** {total_s:.1f} s for "
-        f"{len(questions)} question(s) · `{MODEL_ID}`, same endpoint{wake_note}  \n"
+        f"**Granite Switch (Compound Thinking, Mellea):** {total_s:.1f} s for "
+        f"{len(questions)} question(s) · `{MODEL_ID}`, same endpoint ({GRANITE_HARDWARE}){wake_note}  \n"
         f"Prefill of the shared state {prefill_s * 1000:.0f} ms, then all questions in "
         f"parallel · per question: answer {max(answer_s):.1f} s max, certainty "
         f"{sum(certainty_s) / len(certainty_s) * 1000:.0f} ms avg (aLoRA on the cached answer)"
@@ -579,7 +581,7 @@ def compare(state_text: str, questions_text: str):
     timing = (
         f"{jev_line}  \n"
         f"**Granite Switch:** {g_time['total_s'] * 1000:.0f} ms end to end "
-        f"for {len(questions)} question(s) · `{MODEL_ID}` on vLLM{wake_note}  \n"
+        f"for {len(questions)} question(s) · `{MODEL_ID}` on vLLM, {GRANITE_HARDWARE}{wake_note}  \n"
         f"Batching: prime 1 question {g_time['prime_s'] * 1000:.0f} ms "
         f"({granite[0].prompt_tokens} prompt tokens), then {len(fanout)} in parallel "
         f"{g_time['fanout_s'] * 1000:.0f} ms · {cache_line}"
@@ -674,31 +676,36 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "gut call. That's the idea behind *System One* models like TypeSafe AI's "
         "[Jev](https://docs.typesafe.ai): instead of text, Jev answers a yes/no "
         "question with a **noul**, the probability that the answer is yes.\n\n"
-        "Here, an open 3B model, "
-        "[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview), "
-        "makes the same kind of call in one generated token. Give both models the "
-        "same input and questions and compare.\n\n"
-        "**What makes it possible:** the **uncertainty (UQ) adapter**. Granite "
-        "Switch has a built-in, calibrated uncertainty-quantification adapter that "
-        "scores how likely an answer is to be correct. Prefill the answer \"Yes.\", "
-        "ask the adapter, and its certainty *is* the noul.\n\n"
-        "**What makes it fast**\n"
-        "- **aLoRA KV-cache reuse.** The UQ adapter is an activated LoRA: it switches "
-        "on only at its trigger token and reuses the base model's KV cache for "
-        "everything before it. Granite reads your input once, and every question "
-        "reuses that work.\n"
-        "- **Optimized vLLM kernels.** Granite Switch runs on vLLM with kernels the "
-        "Granite team optimized for switching between embedded adapters.\n"
-        "- **One token per question.** Only the adapter's score digit is generated; "
-        "its probabilities give the certainty.\n\n"
-        "**And it can think slow, too.** The same endpoint, with the same weights, "
-        "also serves Granite as a regular LLM that explains, drafts and works "
-        "through problems in text. Fast gut calls and slow reasoning from one "
-        "deployment. Jev returns decisions only; it doesn't generate text. Switch "
-        "to **🐢 Thinking slow** below to try it.\n\n"
-        "**Or both at once.** **🧠 Compound** thinking writes the answer, then has "
-        "the UQ adapter score its certainty in that answer, returned together as "
-        "JSON. This mode is built with [Mellea](https://mellea.ai)."
+        "One open 3B model, Granite Switch, does both from a single endpoint:\n"
+        "- **⚡ Thinking fast:** a yes/no call as a noul, one generated token per "
+        "question, side by side with Jev.\n"
+        "- **🐢 Thinking slow:** a written answer, like any LLM. Jev returns "
+        "decisions only; it doesn't generate text.\n"
+        "- **🧠 Compound Thinking:** a written answer plus Granite's certainty in "
+        "it, returned as JSON, built with [Mellea](https://mellea.ai).\n\n"
+        "### Technologies inside\n"
+        "- **Granite Switch.** One checkpoint that bundles IBM's Granite 4.1 base "
+        "model with 12 embedded adapter functions (RAG, safety, uncertainty and "
+        "more), each selected per request by name. "
+        "[Model card](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview) · "
+        "[GitHub](https://github.com/generative-computing/granite-switch) · "
+        "[Adapter catalog](https://generative-computing.github.io/granite-switch/adapter_catalog.html)\n"
+        "- **Uncertainty quantification (UQ) adapter.** A calibrated adapter that "
+        "scores how likely an answer is to be correct: of the answers it scores at "
+        "X%, about X% are right. Score a prefilled \"Yes.\" and you get a noul; "
+        "score Granite's own answer and you get Compound Thinking. "
+        "[Adapter README](https://huggingface.co/ibm-granite/granitelib-core-r1.0/blob/main/uncertainty/README.md)\n"
+        "- **aLoRA (activated LoRA).** Adapters that switch on at a trigger token "
+        "and reuse the base model's KV cache for everything before it, so Granite "
+        "reads your input once and every question, fast or slow, reuses that work. "
+        "[Paper (NeurIPS 2025)](https://arxiv.org/abs/2504.12397) · "
+        "[Code](https://github.com/IBM/activated-lora)\n"
+        "- **Optimized vLLM kernels.** Granite Switch's vLLM integration, with "
+        "kernels optimized by the Granite team, applies adapter weights per token "
+        "position rather than per request, so adapter and base-model requests "
+        "share batches and one KV cache. "
+        "[aLoRA vs LoRA live race](https://generative-computing.github.io/granite-switch/race_live.html) · "
+        "[vLLM](https://github.com/vllm-project/vllm)"
     )
     with gr.Row():
         with gr.Column():
@@ -706,13 +713,13 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
                 choices=[
                     ("⚡ Thinking fast", "fast"),
                     ("🐢 Thinking slow", "slow"),
-                    ("🧠 Compound", "compound"),
+                    ("🧠 Compound Thinking", "compound"),
                 ],
                 value="fast",
                 label="Thinking",
                 info=(
                     "Fast: yes/no questions, nouls vs Jev. Slow: Granite writes answers. "
-                    "Compound: Granite writes answers and scores its certainty in each, as JSON."
+                    "Compound Thinking: Granite writes answers and scores its certainty in each, as JSON."
                 ),
                 elem_id="thinking-toggle",
             )
@@ -744,15 +751,18 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
                 wrap=True,
                 visible=False,
             )
-            compound_json = gr.JSON(label="Compound thinking (JSON)", visible=False)
+            compound_json = gr.JSON(label="Compound Thinking (JSON)", visible=False)
             timing = gr.Markdown()
     gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
         "the noul is the probability-weighted average of those bins, so the "
-        "Granite noul always falls between 0.05 and 0.95. Both times are full round "
-        "trips. The Granite endpoint scales to zero after 15 idle minutes; opening "
-        "this page starts waking it, and any wait isn't counted in Granite's time."
+        "Granite noul always falls between 0.05 and 0.95.\n\n"
+        f"**Hardware:** Granite Switch is served by vLLM on {GRANITE_HARDWARE}, on a "
+        "Hugging Face Inference Endpoint. All three modes run on that one GPU. Both "
+        "times are full round trips. The endpoint scales to zero after 15 idle "
+        "minutes; opening this page starts waking it, and any wait isn't counted in "
+        "Granite's time."
     )
     mode.change(
         set_mode,
