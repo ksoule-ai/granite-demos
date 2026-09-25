@@ -47,6 +47,7 @@ from dataclasses import dataclass
 
 import gradio as gr
 import httpx
+import pandas as pd
 import yaml
 from huggingface_hub import hf_hub_download
 from openai import OpenAI
@@ -554,13 +555,25 @@ def compare(state_text: str, questions_text: str):
         warmer.touch()
         jev, jev_s, jev_status = jev_future.result()
 
-    granite_rows = [[q, round(g.noul, 3)] for q, g in zip(questions, granite)]
-    jev_rows = [[q, None if jev is None else round(jev[i], 3)] for i, q in enumerate(questions)]
+    table = pd.DataFrame(
+        {
+            "Question": questions,
+            "Granite noul": [round(g.noul, 3) for g in granite],
+            # object dtype keeps a missing Jev value as None (valid JSON), not NaN
+            JEV_COLUMN: pd.Series(
+                [None if jev is None else round(jev[i], 3) for i in range(len(questions))],
+                dtype=object,
+            ),
+        }
+    )
+    styled = table.style.format(
+        lambda v: "—" if pd.isna(v) else f"{v:g}", subset=["Granite noul", JEV_COLUMN]
+    ).map(lambda _: JEV_CELL_STYLE, subset=[JEV_COLUMN])
 
     jev_timing = (
-        f"{jev_s * 1000:.0f} ms end to end · {jev_status}"
+        f"**Jev (reference):** {jev_s * 1000:.0f} ms end to end · {jev_status}"
         if jev is not None
-        else f"Unavailable · {jev_status}"
+        else f"**Jev (reference):** unavailable · {jev_status}"
     )
     fanout = granite[1:]
     fanout_prompt = sum(g.prompt_tokens for g in fanout)
@@ -580,7 +593,7 @@ def compare(state_text: str, questions_text: str):
         f"{g_time['fanout_s'] * 1000:.0f} ms · {cache_line}"
     )
     jev_ms = jev_s * 1000 if jev is not None else None
-    return granite_rows, jev_rows, timing, jev_timing, g_time["total_s"] * 1000, jev_ms, warmer.status()
+    return styled, timing, jev_timing, g_time["total_s"] * 1000, jev_ms, warmer.status()
 
 
 QUESTIONS_LABEL = f"Questions (one per line, up to {MAX_QUESTIONS})"
@@ -598,10 +611,9 @@ OUTPUT_HEADERS = {
     "certainty in it. Built with Mellea.",
 }
 IDLE_HEADER = "### Results\nPick a kind of thinking to start."
-JEV_REFERENCE_HEADER = (
-    "#### Reference: Jev\nTypeSafe AI's *System One* model, called via OpenRouter. "
-    "Shown for comparison only; it isn't part of the Granite stack."
-)
+# Everything Jev is light blue, via one CSS variable defined per theme (see CSS).
+JEV_COLUMN = "Jev noul (reference)"
+JEV_CELL_STYLE = "color: var(--jev-color); font-weight: 600;"
 
 
 def _fmt_time(ms: float) -> str:
@@ -630,30 +642,26 @@ def think(mode: str, state_text: str, questions_text: str):
     The first update sets the header to the chosen kind of thinking, shows that
     mode's results (hiding the others) and clears the last run, so the page
     switches the moment the button is clicked. Outputs, in order: header,
-    end-to-end tiles, Granite nouls, Jev reference box, Jev table, Jev timing,
-    slow answers, compound JSON, Granite timing, endpoint status.
+    end-to-end tiles, Granite + Jev nouls table, Jev timing, slow answers,
+    compound JSON, Granite timing, endpoint status.
     """
     fast = mode == "fast"
     yield (
         OUTPUT_HEADERS[mode],
         _stats_html(None, show_jev=fast),
         gr.update(visible=fast, value=None),
-        gr.update(visible=fast),
-        gr.update(value=None),
         "",
         gr.update(visible=mode == "slow", value=None),
         gr.update(visible=mode == "compound", value=None),
         "",
         gr.skip(),
     )
-    skip4 = (gr.skip(),) * 4
+    skip2 = (gr.skip(),) * 2
     if fast:
-        granite_rows, jev_rows, timing_md, jev_timing, granite_ms, jev_ms, status = compare(
-            state_text, questions_text
-        )
+        styled, timing_md, jev_timing, granite_ms, jev_ms, status = compare(state_text, questions_text)
         yield (
-            gr.skip(), _stats_html(granite_ms, jev_ms, show_jev=True), granite_rows, gr.skip(),
-            jev_rows, jev_timing, gr.skip(), gr.skip(), timing_md, status,
+            gr.skip(), _stats_html(granite_ms, jev_ms, show_jev=True), styled,
+            jev_timing, gr.skip(), gr.skip(), timing_md, status,
         )
         return
     if not state_text.strip():
@@ -662,11 +670,11 @@ def think(mode: str, state_text: str, questions_text: str):
     if mode == "slow":
         for rows, timing_md, total_s in think_slow(state_text, questions):
             stats = _stats_html(total_s * 1000) if total_s is not None else gr.skip()
-            yield gr.skip(), stats, *skip4, rows, gr.skip(), timing_md, warmer.status()
+            yield gr.skip(), stats, *skip2, rows, gr.skip(), timing_md, warmer.status()
     else:
         for result_json, timing_md, total_s in think_compound(state_text, questions):
             stats = _stats_html(total_s * 1000) if total_s is not None else gr.skip()
-            yield gr.skip(), stats, *skip4, gr.skip(), result_json, timing_md, warmer.status()
+            yield gr.skip(), stats, *skip2, gr.skip(), result_json, timing_md, warmer.status()
 
 
 def think_fast(state_text: str, questions_text: str):
@@ -687,24 +695,21 @@ def on_page_load() -> str:
     return warmer.status()
 
 
-# The Jev reference box (dashed border, muted) and the big end-to-end time
-# tiles. All selectors are our own classes, not Gradio internals.
+# Light blue for everything Jev (a deeper light blue on light backgrounds so it
+# stays readable), plus the big end-to-end time tiles. Selectors are our own
+# classes, not Gradio internals.
 CSS = """
-.jev-reference {
-  border: 1px dashed var(--border-color-primary);
-  border-radius: var(--radius-lg);
-  background: var(--background-fill-secondary);
-  padding: var(--spacing-lg);
-  margin-top: var(--spacing-lg);
-  opacity: 0.9;
-}
+:root { --jev-color: #3a9ad9; }
+.dark { --jev-color: #8cc8f5; }
+.jev-metric, .jev-metric * { color: var(--jev-color) !important; }
 .e2e-row { display: flex; gap: var(--spacing-lg); margin: var(--spacing-md) 0; }
 .e2e-tile {
   flex: 1; padding: var(--spacing-lg) var(--spacing-xl);
   border-radius: var(--radius-lg); background: var(--background-fill-secondary);
   border: 2px solid var(--color-accent);
 }
-.e2e-tile.reference { border: 2px dashed var(--border-color-primary); opacity: 0.85; }
+.e2e-tile.reference { border: 2px dashed var(--jev-color); }
+.e2e-tile.reference .e2e-value, .e2e-tile.reference .e2e-label { color: var(--jev-color); }
 .e2e-value { font-size: 2.4rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .e2e-label { font-size: 0.9rem; opacity: 0.75; margin-top: 2px; }
 """
@@ -771,9 +776,9 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             output_header = gr.Markdown(IDLE_HEADER)
             stats = gr.HTML()
             fast_table = gr.Dataframe(
-                headers=["Question", "Granite noul"],
-                datatype=["str", "number"],
-                column_widths=["75%", "25%"],
+                headers=["Question", "Granite noul", JEV_COLUMN],
+                datatype=["str", "number", "number"],
+                column_widths=["56%", "20%", "24%"],
                 interactive=False,
                 wrap=True,
                 visible=False,
@@ -788,16 +793,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             )
             compound_json = gr.JSON(label="Compound Thinking (JSON)", visible=False)
             timing = gr.Markdown()
-            with gr.Column(visible=False, elem_classes="jev-reference") as jev_box:
-                gr.Markdown(JEV_REFERENCE_HEADER)
-                jev_table = gr.Dataframe(
-                    headers=["Question", "Jev noul"],
-                    datatype=["str", "number"],
-                    column_widths=["75%", "25%"],
-                    interactive=False,
-                    wrap=True,
-                )
-                jev_timing = gr.Markdown()
+            jev_timing = gr.Markdown(elem_classes="jev-metric")
     gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
@@ -811,7 +807,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
     )
     # Each button starts its own kind of thinking straight away.
     run_outputs = [
-        output_header, stats, fast_table, jev_box, jev_table, jev_timing,
+        output_header, stats, fast_table, jev_timing,
         slow_table, compound_json, timing, endpoint_status,
     ]
     fast_btn.click(think_fast, [state, questions], run_outputs, api_name="think_fast")
