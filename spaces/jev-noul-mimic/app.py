@@ -5,14 +5,14 @@ Jev (TypeSafe AI's "System One" model) answers yes/no questions about a
 piece of state with a *noul*: one calibrated number in [0, 1], the
 probability that the answer is yes.
 
-This Space mimics that primitive with an open model running on ZeroGPU:
+This Space mimics that primitive with an open model running on ZeroGPU,
+without ever asking Granite for its own answer:
 
-1. Granite Switch's base model answers the question, constrained by Mellea
-   to exactly "yes" or "no".
-2. Granite Switch's embedded ``uncertainty`` adapter (via Mellea's
-   ``core.check_certainty``) scores how likely that answer is correct.
-3. The certainty is folded into a noul:
-   ``noul = certainty if answer == "yes" else 1 - certainty``.
+1. Prefill the assistant turn with "Yes." and run Granite Switch's embedded
+   ``uncertainty`` adapter (via Mellea's ``core.check_certainty``) to get
+   c(yes), the certainty that "Yes." is correct.
+2. Separately, prefill "No." and run the adapter again to get c(no).
+3. Normalize the two into a noul: ``noul = c(yes) / (c(yes) + c(no))``.
 
 The same state and questions go to the real Jev model via OpenRouter (nouls
 only), and the two sets of numbers are shown side by side.
@@ -21,26 +21,23 @@ only), and the two sets of numbers are shown side by side.
 import os
 
 # ZeroGPU doesn't support torch.compile, and llguidance (Mellea's constrained
-# decoding) compiles its token-mask kernel. Disabling Dynamo makes that a no-op
-# so the kernel runs eagerly. Must be set before torch is imported.
+# decoding, which enforces the adapter's JSON output schema) compiles its
+# token-mask kernel. Disabling Dynamo makes that a no-op so the kernel runs
+# eagerly. Must be set before torch is imported.
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Literal
 
 import granite_switch.hf  # noqa: F401  (registers the granite_switch architecture)
 import gradio as gr
 import spaces
 import torch
-from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from mellea import ModelOption
 from mellea.backends.huggingface import LocalHFBackend
 from mellea.backends.model_ids import IBM_GRANITE_SWITCH_4_1_3B_PREVIEW
-from mellea.stdlib import functional as mfuncs
 from mellea.stdlib.components import Message
 from mellea.stdlib.components.intrinsic import core
 from mellea.stdlib.context import ChatContext
@@ -63,10 +60,6 @@ backend = LocalHFBackend(
     custom_config=(tokenizer, model, torch.device("cuda")),
     load_embedded_adapters=True,
 )
-
-
-class YesNo(BaseModel):
-    answer: Literal["yes", "no"]
 
 
 def _question_prompt(state: str, question: str) -> str:
@@ -100,36 +93,29 @@ def _granite_duration(state: str, questions: list[str]) -> int:
     return 15 + 8 * len(questions)
 
 
+def _certainty(prompt: str, prefilled_answer: str) -> float:
+    """Uncertainty adapter's certainty that `prefilled_answer` is correct."""
+    ctx = (
+        ChatContext()
+        .add(Message("user", prompt))
+        .add(Message("assistant", prefilled_answer))
+    )
+    return float(core.check_certainty(ctx, backend))
+
+
 @spaces.GPU(duration=_granite_duration)
 def granite_nouls(state: str, questions: list[str]) -> tuple[list[dict], float]:
-    """Return one {answer, certainty, noul} per question, plus GPU seconds."""
+    """Return one {c_yes, c_no, noul} per question, plus GPU seconds."""
     start = time.perf_counter()
     results = []
     for question in questions:
         prompt = _question_prompt(state, question)
-
-        # 1. Base model answers, constrained to the YesNo schema.
-        reply, _ = mfuncs.chat(
-            prompt,
-            ChatContext(),
-            backend,
-            format=YesNo,
-            model_options={ModelOption.TEMPERATURE: 0.0, ModelOption.MAX_NEW_TOKENS: 16},
-        )
-        answer = YesNo.model_validate_json(reply.content).answer
-
-        # 2. Uncertainty adapter scores that answer. Present it as a plain
-        #    "Yes."/"No." turn so the adapter sees an answer, not JSON.
-        ctx = (
-            ChatContext()
-            .add(Message("user", prompt))
-            .add(Message("assistant", "Yes." if answer == "yes" else "No."))
-        )
-        certainty = float(core.check_certainty(ctx, backend))
-
-        # 3. Fold into a noul: P(answer is yes).
-        noul = certainty if answer == "yes" else 1.0 - certainty
-        results.append({"answer": answer, "certainty": certainty, "noul": noul})
+        # Two separate adapter calls, one per prefilled answer; Granite's own
+        # answer is never generated.
+        c_yes = _certainty(prompt, "Yes.")
+        c_no = _certainty(prompt, "No.")
+        noul = c_yes / (c_yes + c_no)
+        results.append({"c_yes": c_yes, "c_no": c_no, "noul": noul})
     return results, time.perf_counter() - start
 
 
@@ -188,7 +174,8 @@ def compare(state_text: str, questions_text: str):
                 question,
                 None if j is None else round(j, 3),
                 round(g["noul"], 3),
-                round(g["certainty"], 3),
+                round(g["c_yes"], 3),
+                round(g["c_no"], 3),
             ]
         )
 
@@ -201,7 +188,7 @@ def compare(state_text: str, questions_text: str):
         f"{jev_line}  \n"
         f"**Granite Switch + Mellea:** {granite_s * 1000:.0f} ms GPU time "
         f"for {len(questions)} question(s) · `{MODEL_ID}` · "
-        f"{2 * len(questions)} forward passes (answer + uncertainty adapter each)"
+        f"{2 * len(questions)} uncertainty-adapter calls (prefilled yes + no each)"
     )
     return rows, timing
 
@@ -235,10 +222,10 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
         "answer is yes. This Space rebuilds that primitive from open parts, "
         "[Granite Switch](https://huggingface.co/ibm-granite/granite-switch-4.1-3b-preview) "
         "and [Mellea](https://mellea.ai), and compares the two on the same input.\n\n"
-        "**How the Granite side works:** Mellea constrains the base model to answer "
-        "`yes` or `no`. Granite Switch's embedded `uncertainty` adapter then scores "
-        "that answer, and the result becomes a noul: "
-        "`certainty` if the answer is yes, `1 − certainty` if it's no."
+        "**How the Granite side works:** Granite never answers the question itself. "
+        "Instead, Mellea runs Granite Switch's embedded `uncertainty` adapter twice, "
+        "once with the answer prefilled as \"Yes.\" and once as \"No.\", giving "
+        "c(yes) and c(no). The noul is `c(yes) / (c(yes) + c(no))`."
     )
     with gr.Row():
         with gr.Column():
@@ -258,9 +245,10 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
                     "Question",
                     "Jev noul",
                     "Granite noul",
-                    "Granite certainty",
+                    "Granite c(yes)",
+                    "Granite c(no)",
                 ],
-                datatype=["str", "number", "number", "number"],
+                datatype=["str", "number", "number", "number", "number"],
                 interactive=False,
                 wrap=True,
             )
@@ -268,8 +256,10 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
     gr.Examples(EXAMPLES, inputs=[state, questions])
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
-        "Mellea returns the probability-weighted average of those bins, so Granite "
-        "nouls always fall between 0.05 and 0.95. Granite time is GPU compute only; it doesn't "
+        "Mellea returns the probability-weighted average of those bins, so each "
+        "certainty falls between 0.05 and 0.95, and so does the Granite noul. "
+        "c(yes) and c(no) are scored independently, so they needn't sum to 1. "
+        "Granite time is GPU compute only; it doesn't "
         "include ZeroGPU queueing. Jev time is the full API round trip."
     )
     run.click(compare, inputs=[state, questions], outputs=[table, timing])
