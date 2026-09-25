@@ -558,15 +558,13 @@ def compare(state_text: str, questions_text: str):
         warmer.touch()
         jev, jev_s, jev_status = jev_future.result()
 
-    rows = []
-    for i, (question, g) in enumerate(zip(questions, granite)):
-        j = jev[i] if jev is not None else None
-        rows.append([question, None if j is None else round(j, 3), round(g.noul, 3)])
+    granite_rows = [[q, round(g.noul, 3)] for q, g in zip(questions, granite)]
+    jev_rows = [[q, None if jev is None else round(jev[i], 3)] for i, q in enumerate(questions)]
 
-    jev_line = (
-        f"**Jev:** {jev_s * 1000:.0f} ms end to end · {jev_status}"
+    jev_timing = (
+        f"{jev_s * 1000:.0f} ms end to end · {jev_status}"
         if jev is not None
-        else f"**Jev:** unavailable · {jev_status}"
+        else f"Unavailable · {jev_status}"
     )
     fanout = granite[1:]
     fanout_prompt = sum(g.prompt_tokens for g in fanout)
@@ -579,14 +577,13 @@ def compare(state_text: str, questions_text: str):
     )
     wake_note = f" · waited {wake_s:.0f} s for the endpoint to wake (not counted)" if wake_s > 5 else ""
     timing = (
-        f"{jev_line}  \n"
         f"**Granite Switch:** {g_time['total_s'] * 1000:.0f} ms end to end "
         f"for {len(questions)} question(s) · `{MODEL_ID}` on vLLM, {GRANITE_HARDWARE}{wake_note}  \n"
         f"Batching: prime 1 question {g_time['prime_s'] * 1000:.0f} ms "
         f"({granite[0].prompt_tokens} prompt tokens), then {len(fanout)} in parallel "
         f"{g_time['fanout_s'] * 1000:.0f} ms · {cache_line}"
     )
-    return rows, timing, warmer.status()
+    return granite_rows, jev_rows, timing, jev_timing, warmer.status()
 
 
 QUESTIONS_LABEL = f"Questions (one per line, up to {MAX_QUESTIONS})"
@@ -596,34 +593,55 @@ QUESTIONS_INFO = (
 )
 
 
+OUTPUT_HEADERS = {
+    "fast": "### ⚡ Thinking Fast\nGranite Switch nouls: the uncertainty adapter's P(yes) "
+    "for each question, one generated token each.",
+    "slow": "### 🐢 Thinking Slow\nGranite Switch's base model writes an answer to each question.",
+    "compound": "### 🧠 Compound Thinking\nGranite Switch writes each answer, then scores its "
+    "certainty in it. Built with Mellea.",
+}
+IDLE_HEADER = "### Results\nPick a kind of thinking to start."
+JEV_REFERENCE_HEADER = (
+    "#### Reference: Jev\nTypeSafe AI's *System One* model, called via OpenRouter. "
+    "Shown for comparison only; it isn't part of the Granite stack."
+)
+
+
 def think(mode: str, state_text: str, questions_text: str):
     """Run one mode, started by its button.
 
-    The first update shows that mode's results panel (and hides the others)
-    and clears the last run's timing, so the page switches the moment the
-    button is clicked. Fast: nouls vs Jev. Slow: Granite writes answers.
-    Compound: Granite writes answers and scores each one's certainty, as JSON.
+    The first update sets the header to the chosen kind of thinking, shows that
+    mode's results (hiding the others) and clears the last run's timing, so the
+    page switches the moment the button is clicked. Outputs, in order: header,
+    Granite nouls, Jev reference box, Jev table, Jev timing, slow answers,
+    compound JSON, Granite timing, endpoint status.
     """
+    fast = mode == "fast"
     yield (
-        gr.update(visible=mode == "fast"),
+        OUTPUT_HEADERS[mode],
+        gr.update(visible=fast, value=None),
+        gr.update(visible=fast),
+        gr.update(value=None),
+        "",
         gr.update(visible=mode == "slow"),
         gr.update(visible=mode == "compound"),
         "",
         gr.skip(),
     )
-    if mode == "fast":
-        rows, timing_md, status = compare(state_text, questions_text)
-        yield rows, gr.skip(), gr.skip(), timing_md, status
+    skip5 = (gr.skip(),) * 5
+    if fast:
+        granite_rows, jev_rows, timing_md, jev_timing, status = compare(state_text, questions_text)
+        yield gr.skip(), granite_rows, gr.skip(), jev_rows, jev_timing, gr.skip(), gr.skip(), timing_md, status
         return
     if not state_text.strip():
         raise gr.Error("Enter some state for the model to think about.")
     questions = _parse_questions(questions_text)
     if mode == "slow":
         for rows, timing_md in think_slow(state_text, questions):
-            yield gr.skip(), rows, gr.skip(), timing_md, warmer.status()
+            yield *skip5, rows, gr.skip(), timing_md, warmer.status()
     else:
         for result_json, timing_md in think_compound(state_text, questions):
-            yield gr.skip(), gr.skip(), result_json, timing_md, warmer.status()
+            yield *skip5, gr.skip(), result_json, timing_md, warmer.status()
 
 
 def think_fast(state_text: str, questions_text: str):
@@ -642,6 +660,20 @@ def on_page_load() -> str:
     """Start waking the endpoint as soon as someone opens the page."""
     warmer.ensure()
     return warmer.status()
+
+
+# The Jev reference box: set apart from Granite's results with a dashed border
+# and muted background. Uses our own elem_classes, not Gradio internals.
+CSS = """
+.jev-reference {
+  border: 1px dashed var(--border-color-primary);
+  border-radius: var(--radius-lg);
+  background: var(--background-fill-secondary);
+  padding: var(--spacing-lg);
+  margin-top: var(--spacing-lg);
+  opacity: 0.9;
+}
+"""
 
 
 with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
@@ -702,11 +734,14 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
                 compound_btn = gr.Button("🧠 Compound Thinking", variant="primary")
             endpoint_status = gr.Markdown(warmer.status())
         with gr.Column():
+            output_header = gr.Markdown(IDLE_HEADER)
             fast_table = gr.Dataframe(
-                headers=["Question", "Jev noul", "Granite noul"],
-                datatype=["str", "number", "number"],
+                headers=["Question", "Granite noul"],
+                datatype=["str", "number"],
+                column_widths=["75%", "25%"],
                 interactive=False,
                 wrap=True,
+                visible=False,
             )
             slow_table = gr.Dataframe(
                 headers=["Question", "Jev", "Granite answer"],
@@ -718,6 +753,16 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             )
             compound_json = gr.JSON(label="Compound Thinking (JSON)", visible=False)
             timing = gr.Markdown()
+            with gr.Column(visible=False, elem_classes="jev-reference") as jev_box:
+                gr.Markdown(JEV_REFERENCE_HEADER)
+                jev_table = gr.Dataframe(
+                    headers=["Question", "Jev noul"],
+                    datatype=["str", "number"],
+                    column_widths=["75%", "25%"],
+                    interactive=False,
+                    wrap=True,
+                )
+                jev_timing = gr.Markdown()
     gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
@@ -730,7 +775,10 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "Granite's time."
     )
     # Each button starts its own kind of thinking straight away.
-    run_outputs = [fast_table, slow_table, compound_json, timing, endpoint_status]
+    run_outputs = [
+        output_header, fast_table, jev_box, jev_table, jev_timing,
+        slow_table, compound_json, timing, endpoint_status,
+    ]
     fast_btn.click(think_fast, [state, questions], run_outputs, api_name="think_fast")
     slow_btn.click(think_slow_mode, [state, questions], run_outputs, api_name="think_slow")
     compound_btn.click(think_compound_mode, [state, questions], run_outputs, api_name="think_compound")
@@ -739,4 +787,4 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
     gr.Timer(3).tick(warmer.status, outputs=endpoint_status, show_progress="hidden", queue=False)
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(css=CSS)
