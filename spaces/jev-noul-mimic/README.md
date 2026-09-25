@@ -127,7 +127,9 @@ gets no reuse.
 Three buttons under the questions each start a different kind of thinking on
 the same state, straight away: **⚡ Thinking Fast**, **🐢 Thinking Slow** and
 **🧠 Compound Thinking** (below). The results panel switches to match, under a
-header naming the kind of thinking that ran.
+header naming the kind of thinking that ran. Large tiles under the header show
+the end-to-end time: Granite's, plus Jev's as a reference in Thinking Fast, side
+by side so the two are easy to compare.
 
 - **⚡ Thinking Fast**: yes/no questions. Granite's nouls are the main result.
   Jev's nouls appear below them in a separate, dashed **Reference: Jev** box,
@@ -135,8 +137,8 @@ header naming the kind of thinking that ran.
 - **🐢 Thinking Slow**: the same yes/no questions, or any free-form question you type.
   Granite's base model, with no adapter, writes an answer to each, streamed as
   it's generated, so you can read its reasoning next to the noul it gave in
-  fast mode. The Jev column shows **N/A**, because Jev returns decisions only
-  and doesn't generate text.
+  fast mode. Jev isn't shown here: it returns decisions only and doesn't
+  generate text.
 
 All preset examples use yes/no questions, so the same example works with every
 button.
