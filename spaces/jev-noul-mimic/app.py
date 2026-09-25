@@ -188,8 +188,6 @@ def compare(state_text: str, questions_text: str):
                 question,
                 None if j is None else round(j, 3),
                 round(g["noul"], 3),
-                None if j is None else round(g["noul"] - j, 3),
-                g["answer"],
                 round(g["certainty"], 3),
             ]
         )
@@ -260,11 +258,9 @@ with gr.Blocks(title="Granite Switch nouls vs Jev") as demo:
                     "Question",
                     "Jev noul",
                     "Granite noul",
-                    "Δ (Granite − Jev)",
-                    "Granite answer",
                     "Granite certainty",
                 ],
-                datatype=["str", "number", "number", "number", "str", "number"],
+                datatype=["str", "number", "number", "number"],
                 interactive=False,
                 wrap=True,
             )
