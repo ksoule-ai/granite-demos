@@ -703,6 +703,11 @@ CSS = """
 :root { --jev-color: #9ca3af; }
 .dark { --jev-color: #7d8590; }
 .jev-metric, .jev-metric * { color: var(--jev-color) !important; }
+/* The Jev column header (3rd column) in the Thinking Fast table. The cells
+   are greyed by the pandas Styler; headers can't be, so match the ARIA index. */
+#fast-table th[aria-colindex="3"], #fast-table th[aria-colindex="3"] * {
+  color: var(--jev-color) !important;
+}
 .e2e-row { display: flex; gap: var(--spacing-lg); margin: var(--spacing-md) 0; }
 .e2e-tile {
   flex: 1; padding: var(--spacing-lg) var(--spacing-xl);
@@ -754,20 +759,29 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "[aLoRA vs LoRA live race](https://generative-computing.github.io/granite-switch/race_live.html) · "
         "[vLLM](https://github.com/vllm-project/vllm)"
     )
+    # The inputs are created first but placed further down, so the examples can
+    # sit right under the intro. They start with the first example filled in.
+    state = gr.Textbox(
+        label="State (text or JSON)",
+        value=EXAMPLE_INPUTS[0][0],
+        lines=6,
+        max_lines=18,
+        placeholder="The input the models think about.",
+        render=False,
+    )
+    questions = gr.Textbox(
+        label=QUESTIONS_LABEL,
+        info=QUESTIONS_INFO,
+        value=EXAMPLE_INPUTS[0][1],
+        lines=5,
+        placeholder="e.g. Is the customer asking for a refund?",
+        render=False,
+    )
+    gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     with gr.Row():
         with gr.Column():
-            state = gr.Textbox(
-                label="State (text or JSON)",
-                lines=6,
-                max_lines=18,
-                placeholder="The input the models think about.",
-            )
-            questions = gr.Textbox(
-                label=QUESTIONS_LABEL,
-                info=QUESTIONS_INFO,
-                lines=5,
-                placeholder="e.g. Is the customer asking for a refund?",
-            )
+            state.render()
+            questions.render()
             with gr.Row():
                 fast_btn = gr.Button("⚡ Thinking Fast", variant="primary")
                 slow_btn = gr.Button("🐢 Thinking Slow", variant="primary")
@@ -777,6 +791,7 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             output_header = gr.Markdown(IDLE_HEADER)
             stats = gr.HTML()
             fast_table = gr.Dataframe(
+                elem_id="fast-table",
                 headers=["Question", "Granite noul", JEV_COLUMN],
                 datatype=["str", "number", "number"],
                 column_widths=["56%", "20%", "24%"],
@@ -795,7 +810,6 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
             compound_json = gr.JSON(label="Compound Thinking (JSON)", visible=False)
             timing = gr.Markdown()
             jev_timing = gr.Markdown(elem_classes="jev-metric")
-    gr.Examples(EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS)
     gr.Markdown(
         "Note: the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), and "
         "the noul is the probability-weighted average of those bins, so the "
