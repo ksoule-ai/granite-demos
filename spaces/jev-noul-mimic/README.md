@@ -114,12 +114,13 @@ The page reports vLLM's `cached_tokens` for the fan-out, so the reuse is
 visible. vLLM caches in 16-token blocks, so a state shorter than one block
 gets no reuse.
 
-## The two buttons
+## The Thinking toggle
 
-Two buttons under the questions each start a different kind of thinking on the
-same state, straight away: **⚡ Thinking Fast** and **🐢 Thinking Slow**. The
-results panel switches to match, under a header naming the kind of thinking
-that ran. Three tiles under the header show Granite's end-to-end time, Jev's
+A **Thinking** toggle at the top of the page switches between **⚡ Thinking
+Fast** and **🐢 Thinking Slow**. Switching it shows that mode's examples, loads
+its default example into the inputs, relabels the questions box and the run
+button (**⚡ Think Fast** / **🐢 Think Slow**), and resets the results panel,
+which sits under a header naming the kind of thinking. Three tiles under the header show Granite's end-to-end time, Jev's
 end-to-end time, and **agreement with Jev**: of the questions Jev calls yes
 (noul > 0.5), how many Granite also calls yes (noul > 0.5), and the same for
 no.
@@ -133,9 +134,10 @@ no.
   doesn't generate text, so it isn't called here: the Jev time and agreement
   tiles stay in place but read **N/A**.
 
-There are two example sets above the inputs, one per button: yes/no questions
-for Thinking Fast, and open-ended questions (summarize, draft a reply, what's
-still open) for Thinking Slow, on the same states.
+Each mode has its own example set, shown above the inputs when that mode is
+selected: yes/no questions for Thinking Fast, and open-ended questions
+(summarize, draft a reply, what's still open) for Thinking Slow, on the same
+states.
 
 ## Thinking Slow
 
@@ -167,7 +169,7 @@ right, 0.30 when wrong (only 2 wrong answers, so treat that as indicative).
 
 The endpoint scales to zero after 15 idle minutes (HF's minimum), and a cold
 start takes about 3–5 minutes. So that visitors don't sit through that after
-clicking a button, one shared background warmer handles it:
+pressing the run button, one shared background warmer handles it:
 
 1. **Wake on page load.** Opening the page probes the endpoint's `/models`
    route. If it's asleep, that request starts it, and the warmer keeps polling
@@ -180,7 +182,7 @@ clicking a button, one shared background warmer handles it:
 
 "Ready" expires 10 minutes after the last use, safely inside the 15-minute
 scale-down window. After that the next visitor re-checks rather than trusting
-an endpoint that may have gone to sleep. Both buttons wait on the same warmer,
+an endpoint that may have gone to sleep. The run button waits on the same warmer,
 and any wait is reported separately, not counted in Granite's time. Only one
 wake/warm pass runs at a time, however many tabs are open.
 
@@ -214,5 +216,5 @@ as-is.
 - Priming adds one round trip before the fan-out. With one question there's
   nothing to share. Jev answers every question in one call.
 - The warmer shortens cold starts but can't skip them. If someone clicks
-  a button within the first few minutes of opening the page after idle,
+  the run button within the first few minutes of opening the page after idle,
   they still wait for the rest of the wake-up (up to ~7 minutes).

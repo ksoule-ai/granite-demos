@@ -452,8 +452,7 @@ def compare(state_text: str, questions_text: str):
     return styled, timing, jev_timing, g_time["total_s"] * 1000, jev_ms, agreement, warmer.status()
 
 
-QUESTIONS_LABEL = f"Questions (one per line, up to {MAX_QUESTIONS})"
-QUESTIONS_INFO = "Thinking Fast needs yes/no questions. Thinking Slow takes open-ended questions."
+
 
 
 OUTPUT_HEADERS = {
@@ -462,7 +461,6 @@ OUTPUT_HEADERS = {
     "slow": "### 🐢 Thinking Slow\nGranite Switch writes each answer, then scores its "
     "certainty in it. Built with Mellea.",
 }
-IDLE_HEADER = "### Results\nPick a kind of thinking to start."
 JEV_COLUMN = "Jev noul (reference)"
 
 
@@ -599,12 +597,46 @@ def think(mode: str, state_text: str, questions_text: str):
         )
 
 
-def think_fast(state_text: str, questions_text: str):
-    yield from think("fast", state_text, questions_text)
+RUN_LABELS = {"fast": "⚡ Think Fast", "slow": "🐢 Think Slow"}
+QUESTION_LABELS = {
+    "fast": f"Yes/no questions (one per line, up to {MAX_QUESTIONS})",
+    "slow": f"Open-ended questions (one per line, up to {MAX_QUESTIONS})",
+}
+QUESTION_PLACEHOLDERS = {
+    "fast": "e.g. Is the customer asking for a refund?",
+    "slow": "e.g. What does the customer want?",
+}
+DEFAULT_EXAMPLE = {"fast": EXAMPLE_INPUTS[0], "slow": SLOW_EXAMPLE_INPUTS[0]}
 
 
-def think_slow_mode(state_text: str, questions_text: str):
-    yield from think("slow", state_text, questions_text)
+def set_mode(mode: str):
+    """Switch the page to one kind of thinking.
+
+    Shows that mode's examples, loads its default example into the inputs,
+    relabels the questions box and run button, and clears the last run.
+    Outputs, in order: fast examples, slow examples, state, questions, run
+    button, then the run outputs (header, tiles, fast table, Jev timing, slow
+    table, Granite timing).
+    """
+    fast = mode == "fast"
+    state_value, questions_value = DEFAULT_EXAMPLE[mode]
+    return (
+        gr.update(visible=fast),
+        gr.update(visible=not fast),
+        state_value,
+        gr.update(
+            value=questions_value,
+            label=QUESTION_LABELS[mode],
+            placeholder=QUESTION_PLACEHOLDERS[mode],
+        ),
+        gr.update(value=RUN_LABELS[mode]),
+        OUTPUT_HEADERS[mode] + "\n\nPress **" + RUN_LABELS[mode] + "** to start.",
+        "",
+        gr.update(visible=fast, value=None),
+        "",
+        gr.update(visible=not fast, value=None),
+        "",
+    )
 
 
 def on_page_load() -> str:
@@ -616,6 +648,31 @@ def on_page_load() -> str:
 # Light blue example boxes and the big end-to-end time tiles. Selectors are
 # our own ids and classes, not Gradio internals.
 CSS = """
+/* The Thinking toggle as a segmented control: one pill, two equal halves, the
+   selected half in the theme's primary color. The native radio circles are
+   hidden visually but stay in the DOM for keyboard and screen readers. */
+#thinking-toggle .wrap {
+  display: flex; flex-wrap: nowrap; gap: 0; padding: 4px;
+  border: 1px solid var(--border-color-primary); border-radius: 999px;
+  background: var(--background-fill-secondary);
+}
+#thinking-toggle label {
+  flex: 1; justify-content: center; border: none; box-shadow: none;
+  border-radius: 999px; background: transparent; padding: 8px 16px;
+  font-weight: 600; transform: none;
+}
+#thinking-toggle label:hover { background: var(--background-fill-primary); }
+#thinking-toggle label.selected {
+  background: var(--button-primary-background-fill);
+  color: var(--button-primary-text-color);
+}
+#thinking-toggle input[type=radio] {
+  position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0;
+}
+#thinking-toggle label > span { margin-left: 0; }
+#thinking-toggle label:has(input:focus-visible) {
+  outline: 2px solid var(--color-accent); outline-offset: 2px;
+}
 /* Example boxes: a light shade of blue so they stand out (muted in dark mode). */
 :root { --example-bg: #e8f2fc; --example-bg-hover: #d6e8fa; --example-border: #c5dcf3; }
 .dark { --example-bg: #1f2d3d; --example-bg-hover: #27394d; --example-border: #34506e; }
@@ -670,8 +727,16 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "position rather than per request, so adapter and base-model requests "
         "share batches and one KV cache."
     )
+    # The Thinking toggle sits right under the intro; switching it swaps the
+    # examples and loads that mode's default example.
+    mode = gr.Radio(
+        choices=[("⚡ Thinking Fast", "fast"), ("🐢 Thinking Slow", "slow")],
+        value="fast",
+        label="Thinking",
+        elem_id="thinking-toggle",
+    )
     # The inputs are created first but placed further down, so the examples can
-    # sit right under the intro. They start with the first example filled in.
+    # sit above them. They start with the Thinking Fast default example.
     state = gr.Textbox(
         label="State (text or JSON)",
         value=EXAMPLE_INPUTS[0][0],
@@ -681,31 +746,30 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         render=False,
     )
     questions = gr.Textbox(
-        label=QUESTIONS_LABEL,
-        info=QUESTIONS_INFO,
+        label=QUESTION_LABELS["fast"],
         value=EXAMPLE_INPUTS[0][1],
         lines=5,
-        placeholder="e.g. Is the customer asking for a refund?",
+        placeholder=QUESTION_PLACEHOLDERS["fast"],
         render=False,
     )
-    gr.Examples(
-        EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
-        label="Examples · ⚡ Thinking Fast (yes/no questions)", elem_id="examples",
-    )
-    gr.Examples(
-        SLOW_EXAMPLE_INPUTS, inputs=[state, questions], example_labels=SLOW_EXAMPLE_LABELS,
-        label="Examples · 🐢 Thinking Slow (open-ended questions)", elem_id="examples-slow",
-    )
+    with gr.Column(visible=True) as fast_examples:
+        gr.Examples(
+            EXAMPLE_INPUTS, inputs=[state, questions], example_labels=EXAMPLE_LABELS,
+            label="Examples (yes/no questions)", elem_id="examples",
+        )
+    with gr.Column(visible=False) as slow_examples:
+        gr.Examples(
+            SLOW_EXAMPLE_INPUTS, inputs=[state, questions], example_labels=SLOW_EXAMPLE_LABELS,
+            label="Examples (open-ended questions)", elem_id="examples-slow",
+        )
     with gr.Row():
         with gr.Column():
             state.render()
             questions.render()
-            with gr.Row():
-                fast_btn = gr.Button("⚡ Thinking Fast", variant="primary")
-                slow_btn = gr.Button("🐢 Thinking Slow", variant="primary")
+            run = gr.Button(RUN_LABELS["fast"], variant="primary")
             endpoint_status = gr.Markdown(warmer.status())
         with gr.Column():
-            output_header = gr.Markdown(IDLE_HEADER)
+            output_header = gr.Markdown(OUTPUT_HEADERS["fast"] + "\n\nPress **" + RUN_LABELS["fast"] + "** to start.")
             stats = gr.HTML()
             fast_table = gr.Dataframe(
                 elem_id="fast-table",
@@ -737,13 +801,18 @@ with gr.Blocks(title="Thinking Fast and Slow with Granite") as demo:
         "minutes; opening this page starts waking it, and any wait isn't counted in "
         "Granite's time."
     )
-    # Each button starts its own kind of thinking straight away.
     run_outputs = [
         output_header, stats, fast_table, jev_timing,
         slow_table, timing, endpoint_status,
     ]
-    fast_btn.click(think_fast, [state, questions], run_outputs, api_name="think_fast")
-    slow_btn.click(think_slow_mode, [state, questions], run_outputs, api_name="think_slow")
+    # Switching the toggle swaps examples, loads that mode's default, and resets.
+    mode.change(
+        set_mode,
+        inputs=mode,
+        outputs=[fast_examples, slow_examples, state, questions, run, *run_outputs[:-1]],
+        show_progress="hidden",
+    )
+    run.click(think, [mode, state, questions], run_outputs, api_name="think")
     # Wake on page load, and keep the status line current while it wakes.
     demo.load(on_page_load, outputs=endpoint_status, show_progress="hidden")
     gr.Timer(3).tick(warmer.status, outputs=endpoint_status, show_progress="hidden", queue=False)
