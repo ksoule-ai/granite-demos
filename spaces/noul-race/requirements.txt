@@ -1,0 +1,6 @@
+typesafe-sdk==0.7.1
+openai>=1.40.0
+huggingface_hub
+pyyaml
+httpx
+pandas
