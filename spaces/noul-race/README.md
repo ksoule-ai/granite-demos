@@ -30,10 +30,10 @@ Noul Race puts one open 3B model, Granite Switch, next to Jev (via
 and the same questions, and scores all three against an answer key.
 
 The page has two tabs. **Obstacle Course**, the one it opens on, mixes yes/no
-and open-ended questions, and runs Granite Switch and GPT Luna only. **Race**
+and open-ended questions, and runs Granite Switch and GPT Luna only. **Sprint**
 is all yes/no questions across all three models.
 
-## The flow (Race)
+## The flow (Sprint)
 
 1. **Provide a context.** Paste your own text or JSON, or click **Random
    Wikipedia article** to pull one. The button draws random English articles
@@ -66,7 +66,7 @@ Hugging Face Inference Endpoint.
 
 ## Obstacle Course
 
-This tab is the same page as Race with a mix of question types, to show a model
+This tab is the same page as Sprint with a mix of question types, to show a model
 that has to switch between a System One call and a written answer.
 
 - **Questions.** A line ending `…? Yes` or `…? No` is a yes/no question. A line

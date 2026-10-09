@@ -21,7 +21,7 @@ The flow
    its line. A question with no answer still gets nouls but isn't scored.
    Six tiles show each model's end-to-end latency and accuracy.
 
-That is the "Race" tab. The "Obstacle Course" tab is the same page with a mix
+That is the "Sprint" tab. The "Obstacle Course" tab is the same page with a mix
 of question types: a line ending "...? Freeform" is an open-ended question.
 Yes/no questions still go to each model's System One call (the uncertainty
 adapter for Granite, the Decisions API for Luna); freeform questions go to a
@@ -729,7 +729,7 @@ GREY = "#9ca3af"  # the Jev column on the Obstacle Course, where Jev isn't run
 # What differs between the two tabs. `sits_out` names the models that aren't run.
 PAGES = {
     "race": {
-        "tab": "Race",
+        "tab": "Sprint",
         "run_label": "🏁 Race the Models",
         "api_prefix": "",
         "sits_out": (),
