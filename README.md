@@ -345,24 +345,28 @@ reference.
 
 [`spaces/noul-race/`](spaces/noul-race/) · [README](spaces/noul-race/README.md)
 
-A fork of the demo above, turned into a three-way race between Granite Switch, Jev and
-OpenAI's GPT Luna (`gpt-6-luna`, through the Decisions API).
+A fork of the demo above, turned into a race between Granite Switch, Jev,
+OpenAI's GPT Luna (`gpt-6-luna`, through the Decisions API) and JEV-9B
+([`autotrust/JEV-9B`](https://huggingface.co/autotrust/JEV-9B)), AutoTrust's open
+reproduction of Jev, hosted on its own Inference Endpoint
+([`scripts/create_jev_endpoint.py`](scripts/create_jev_endpoint.py)).
 
 - **Context.** Paste any text or JSON, or click **Random Wikipedia article**.
 - **Questions.** One per line with the answer after the question mark (`…? Yes`,
   `…? No`). Write them yourself or click **Generate questions**, which streams them in
   from `openai/gpt-oss-120b` on OpenRouter.
-- **Sprint tab.** 10 generated yes/no questions go to all three models at once. Granite's
+- **Sprint tab.** 10 generated yes/no questions go to all four models at once. Granite's
   noul here is c(yes): the UQ adapter's certainty in a prefilled "Yes".
 - **Obstacle Course tab.** 10 yes/no and 5 freeform (`…? Freeform`) questions in random
   order, run one at a time. Yes/no questions go to each model's System One call;
   freeform questions go to a chat completion capped at 20 tokens. Jev returns decisions
-  only, so it isn't run and shows greyed out.
+  only: it runs until its first freeform question, then it's out of the race and its
+  tiles read N/A. Generated sets always open with a yes/no question.
 - **Metrics.** Each model has a latency tile that runs as a stopwatch, with a Noul accuracy
   tile beneath it. The first model to finish gets a green latency tile. Under the tiles,
   a progress strip has a row per model and a column per question: a cell is yellow while
   its question is in progress and blue once it's complete, and the row of the first model
-  to finish turns green. Jev's row stays grey on the Obstacle Course. Each model's timing line
+  to finish turns green. On the Obstacle Course Jev's row turns light red from the question that puts it out. Each model's timing line
   under the table reports how many prompt tokens its API read from cache, even when
   that's 0.
 
@@ -376,7 +380,7 @@ python scripts/create_noul_race_space.py
 ```
 
 It needs `HF_TOKEN` and `HF_ENDPOINT_URL` in `.env`, plus `OPENROUTER_API_KEY` (Jev and
-question generation) and `OPENAI_API_KEY` (GPT Luna) for the full race.
+question generation) and `OPENAI_API_KEY` (GPT Luna) and `JEV9B_ENDPOINT_URL` (JEV-9B) for the full race.
 
 ## ZeroGPU smoke test
 

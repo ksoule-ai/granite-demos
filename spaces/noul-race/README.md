@@ -27,11 +27,14 @@ a *predicate* question returns the probability that it's true.
 
 Noul Race puts one open 3B model, Granite Switch, next to Jev (via
 [OpenRouter](https://openrouter.ai/typesafe)) and GPT Luna on the same context
-and the same questions, and scores all three against an answer key.
+and the same questions, and scores them against an answer key. A fourth model,
+**JEV-9B** ([`autotrust/JEV-9B`](https://huggingface.co/autotrust/JEV-9B)), is
+AutoTrust's open reproduction of Jev, hosted on its own Inference Endpoint. It
+is not a TypeSafe model.
 
 The page has two tabs. **Obstacle Course**, the one it opens on, mixes yes/no
-and open-ended questions, and runs Granite Switch and GPT Luna only. **Sprint**
-is all yes/no questions across all three models.
+and open-ended questions, and runs every model; Jev drops out at its first open-ended question.
+**Sprint** is all yes/no questions across all four models.
 
 ## The flow (Sprint)
 
@@ -47,12 +50,12 @@ is all yes/no questions across all three models.
    ([`openai/gpt-oss-120b`](https://openrouter.ai/openai/gpt-oss-120b)),
    writes 10 from the context. The answers are right there in the box, so
    they can be checked and edited before the race.
-3. **Race the Models.** The context and questions go to Granite Switch, Jev
-   and GPT Luna at the same time.
+3. **Race the Models.** The context and questions go to Granite Switch,
+   JEV-9B, GPT Luna and Jev at the same time.
 4. **Scoring.** A noul above 0.5 counts as a yes. The table shows the answer
    from each line and each model's noul with ✓ or ✗.
 
-Six tiles summarize the race, one column per model: **end-to-end latency** on
+Eight tiles summarize the race, one column per model: **end-to-end latency** on
 top and, beneath it, **Noul accuracy**: how many of the model's nouls land on
 the right side of 0.5 for the answer key ("7/10 Nouls correct"). While the models run,
 each latency tile is a stopwatch showing that model's elapsed time; a model's
@@ -64,8 +67,8 @@ Under the tiles, a **progress strip** shows the race as it happens: a row per
 model and a column per question. A cell turns yellow while its question is in
 progress and blue once it's complete. The row of the first model to finish
 turns green, along with its latency tile. On this tab Jev and Luna take all the
-questions in one request, so their rows change together; Granite's first
-question runs alone, then the rest together.
+questions in one request, so their rows change together; for Granite and
+JEV-9B, the first question runs alone, then the rest together.
 
 Under the table, each model's timing line reports its **cache reuse**: how many
 prompt tokens its API says it read from cache, even when that's 0. Jev's API
@@ -84,23 +87,31 @@ that has to switch between a System One call and a written answer.
 - **Questions.** A line ending `…? Yes` or `…? No` is a yes/no question. A line
   ending `…? Freeform` is an open-ended question. **Generate questions** asks
   for 10 yes/no questions and 5 open-ended ones from the context and puts them
-  in a random order, so which positions are freeform changes every time.
+  in a random order, so which positions are freeform changes every time. The
+  first question is always a yes/no one, so Jev gets to start.
 - **Yes/no questions** go to each model's System One call and come back as a
-  noul: Granite's uncertainty adapter (c(yes)), and Luna's Decisions API.
+  noul: Granite's uncertainty adapter (c(yes)), JEV-9B's decision adapter
+  (the probability of "true"), and Luna's Decisions API.
 - **Freeform questions** go to a chat completion and come back as a written
-  answer of up to 20 tokens: Granite's base model on the same endpoint, and
+  answer of up to 20 tokens: Granite's base model on the same endpoint,
+  JEV-9B's base model on its endpoint (thinking off), and
   OpenAI's chat completions API for Luna, with `reasoning_effort` set to
   `none` (Luna's default is `medium`; Granite's base model doesn't reason).
-- **Jev isn't run.** It returns decisions only and can't take freeform
-  questions. It stays in the tiles and the table, greyed out and marked N/A,
-  and its row on the progress strip stays grey.
+- **Jev runs until its first freeform question.** It returns decisions only,
+  so it answers the yes/no questions one request at a time and is out of the
+  race at the first freeform one. From then on its stopwatch and accuracy
+  tiles read N/A, the question is marked "✕ can't answer", and the rest of
+  its column is greyed out. On the progress strip the questions it couldn't
+  get to turn light red, and the ones it did answer stay blue. With no freeform question in the set, Jev finishes
+  and is scored like the others.
 - **Scoring.** Accuracy counts the yes/no questions only. Written answers are
   shown in the table and aren't graded.
 
 **One at a time.** Each model works through the questions in order, and a
 question isn't sent until the answer to the one before it has come back. So
 every question is its own request: an adapter call or a chat completion for
-Granite, and a Decisions request or a chat completion for Luna. The two models
+Granite, a decision call or a chat completion for JEV-9B, and a Decisions
+request or a chat completion for Luna. The three models
 run side by side, and each one's latency is the time its own run took. The
 table fills in as answers arrive, and the progress strip moves one cell at a
 time along each model's row; the latency and accuracy tiles are worked out
@@ -269,6 +280,18 @@ each answer's `probability` as the noul. The Decisions API is in public beta,
 so it's called over plain HTTP rather than through the SDK. A question Luna
 refuses comes back without a probability; it shows as "—" and isn't scored.
 
+The JEV-9B side calls its own Inference Endpoint, which serves
+`autotrust/JEV-9B` on stock vLLM 0.31.0
+([`scripts/create_jev_endpoint.py`](../../scripts/create_jev_endpoint.py) in
+the repo creates it). One server takes both kinds of request. A yes/no
+question follows the model card's recipe: the decision prompt goes to the
+adapter (`jev-decision`) as a one-token completion limited to the two option
+tokens, and the Space adds the decision head's bias and applies its
+temperature to get the probability of "true". A freeform question is a chat
+completion on the unmodified Qwen3.5-9B base model. On the Sprint the first
+question goes alone and the rest fan out, as for Granite. The endpoint scales
+to zero like Granite's; the page wakes it on load, and the wait isn't counted.
+
 ## Setup
 
 1. Create a Gradio Space (free CPU hardware is enough) and push this folder
@@ -276,6 +299,11 @@ refuses comes back without a probability; it shows as "—" and isn't scored.
 2. **Settings → Variables and secrets**, add these secrets:
    - `HF_ENDPOINT_URL`: the Granite Switch endpoint URL, ending in `/v1`.
    - `HF_TOKEN`: a token allowed to call that endpoint.
+   - `JEV9B_ENDPOINT_URL`: the JEV-9B endpoint URL. It's called with
+     `HF_TOKEN`, so that token must be allowed to call it too. Without it, the
+     JEV-9B column shows as unavailable.
+   - `JEV9B_HARDWARE` (optional): the endpoint's GPU, shown under results.
+     Defaults to a single NVIDIA L40S.
    - `OPENROUTER_API_KEY`: your OpenRouter API key, used for both Jev and
      question generation. Without it, questions can't be generated and the Jev
      column shows as unavailable.

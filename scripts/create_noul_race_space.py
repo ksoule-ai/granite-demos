@@ -10,10 +10,14 @@ Reads from .env (or the environment):
 - HF_TOKEN: needs "write" scope. Also stored as the Space's HF_TOKEN secret,
   so it must be allowed to call the Granite Switch endpoint.
 - HF_ENDPOINT_URL: the Granite Switch endpoint URL, ending in /v1.
+- JEV9B_ENDPOINT_URL (optional): the JEV-9B endpoint URL (see
+  scripts/create_jev_endpoint.py). Without it the JEV-9B column shows as
+  unavailable.
 - OPENROUTER_API_KEY: used for Jev and for generating the questions.
 - OPENAI_API_KEY (optional; OPEN_AI_KEY is also accepted): for GPT Luna.
   Without it the Luna column shows as unavailable.
-- MODEL_ID, JEV_MODEL, LUNA_MODEL, LUNA_CHAT_MODEL, QUESTION_MODEL (optional): passed through when set.
+- MODEL_ID, JEV_MODEL, LUNA_MODEL, LUNA_CHAT_MODEL, QUESTION_MODEL, JEV9B_HARDWARE (optional):
+  passed through when set.
 
 The Space runs on free CPU hardware and is created private; pass --public to
 make it public.
@@ -29,7 +33,7 @@ from huggingface_hub import HfApi
 SPACE_DIR = Path(__file__).parent.parent / "spaces" / "noul-race"
 SPACE_NAME = "noul-race"
 REQUIRED_SECRETS = ["HF_ENDPOINT_URL", "HF_TOKEN"]
-OPTIONAL_SECRETS = ["OPENROUTER_API_KEY", "MODEL_ID", "JEV_MODEL", "OPENAI_API_KEY", "LUNA_MODEL", "LUNA_CHAT_MODEL", "QUESTION_MODEL"]
+OPTIONAL_SECRETS = ["JEV9B_ENDPOINT_URL", "JEV9B_HARDWARE", "OPENROUTER_API_KEY", "MODEL_ID", "JEV_MODEL", "OPENAI_API_KEY", "LUNA_MODEL", "LUNA_CHAT_MODEL", "QUESTION_MODEL"]
 
 
 def main():

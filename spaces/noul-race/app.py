@@ -16,19 +16,23 @@ The flow
 2. The questions box holds one yes/no question per line, each followed by its
    answer: "...? Yes" or "...? No". The user writes them, or "Generate
    questions" asks gpt-oss-120b, on OpenRouter, for 10 of them.
-3. "Race the Models" sends the context and questions to all three models.
+3. "Race the Models" sends the context and questions to all four models:
+   Granite Switch, JEV-9B (AutoTrust's open reproduction of Jev, on its own
+   endpoint), GPT Luna and Jev.
 4. Each noul above 0.5 counts as a yes and is scored against the answer on
    its line. A question with no answer still gets nouls but isn't scored.
-   Six tiles show each model's end-to-end latency and accuracy.
+   Eight tiles show each model's end-to-end latency and accuracy.
 
 That is the "Sprint" tab. The "Obstacle Course" tab is the same page with a mix
 of question types: a line ending "...? Freeform" is an open-ended question.
 Yes/no questions still go to each model's System One call (the uncertainty
-adapter for Granite, the Decisions API for Luna); freeform questions go to a
-chat completion. Each model takes the questions one at a time, in order: a
+adapter for Granite, the decision head for JEV-9B, the Decisions API for
+Luna); freeform questions go to a chat completion. Each model takes the questions one at a time, in order: a
 question isn't sent until the one before it has come back, and the table fills
-in as the answers arrive. Jev returns decisions only, so it isn't run there
-and shows greyed out.
+in as the answers arrive. Jev returns decisions only: it answers until it
+meets a freeform question, and then it's out of the race, with its tiles
+reading N/A. A generated set always opens with a yes/no question, so Jev gets
+to start.
 
 The Granite noul, without ever asking Granite for its own answer
 ---------------------------------------------------------------
@@ -93,6 +97,18 @@ WAKE_TIMEOUT_S = 420
 # inside the 15-minute scale-to-zero window.
 READY_TTL_S = 10 * 60
 
+# JEV-9B is AutoTrust's open reproduction of Jev (not a TypeSafe model): the
+# Qwen3.5-9B base model plus a decision adapter, served by stock vLLM on its own
+# Inference Endpoint (scripts/create_jev_endpoint.py). Without the URL the model
+# shows as unavailable. It takes the same token as the Granite endpoint.
+JEV9B = "JEV-9B"  # its name on the page
+JEV9B_REPO = os.environ.get("JEV9B_MODEL_ID", "autotrust/JEV-9B")
+JEV9B_ENDPOINT_URL = os.environ.get("JEV9B_ENDPOINT_URL", "").rstrip("/")
+if JEV9B_ENDPOINT_URL and not JEV9B_ENDPOINT_URL.endswith("/v1"):
+    JEV9B_ENDPOINT_URL += "/v1"
+JEV9B_HARDWARE = os.environ.get("JEV9B_HARDWARE", "a single NVIDIA L40S GPU (48 GB)")
+JEV9B_DECISION_MODEL = "jev-decision"  # the adapter's name on the endpoint
+
 # Jev is reached through OpenRouter's System One API, which the TypeSafe SDK
 # speaks natively; a bare model id like "jev-1.13" routes to typesafe/jev-1.13.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api"
@@ -149,6 +165,16 @@ SCORE_VALUES = {str(k): float(v) for k, v in _likelihood["categories_to_values"]
 SCORE_PREFIX = '{"' + _likelihood["input_path"][0] + '": "'
 TOP_LOGPROBS = 10  # same as Mellea's likelihood decoding
 
+# JEV-9B's decision head, from its model repo: the token ids of a noul's two
+# options ("false", "true"), the head's bias for each, and the temperature that
+# calibrates a noul. The bias and temperature are applied here, as the model
+# card's recipe does.
+_jev9b_head = json.load(open(hf_hub_download(JEV9B_REPO, "adapter_vllm/decision_head.json")))
+_noul_slot = _jev9b_head["slots"]["ranges"]["noul"][0]
+JEV9B_NOUL_IDS = _jev9b_head["verbalizer_ids"][_noul_slot : _noul_slot + 2]
+JEV9B_NOUL_BIAS = _jev9b_head["bias"][_noul_slot : _noul_slot + 2]
+JEV9B_NOUL_TEMPERATURE = json.load(open(hf_hub_download(JEV9B_REPO, "calibration.json")))["per_kind"]["noul"]
+
 
 FAST_INSTRUCTION = "Reply with exactly one word, 'Yes' or 'No'."
 # Obstacle Course: freeform questions get a short written answer.
@@ -156,6 +182,10 @@ FREEFORM_INSTRUCTION = "Answer in a few words."
 FREEFORM_MAX_TOKENS = 20
 FREEFORM = "freeform"  # a question's answer when it's open-ended
 PENDING = "…"  # an Obstacle Course result that hasn't come back yet
+# Jev on the Obstacle Course: the freeform question that put it out of the
+# race, and the questions it never reached.
+JEV_OUT = "✕ can't answer"
+OUT = "N/A"
 TODO, RUNNING, DONE = "todo", "running", "done"  # a question's state on the progress strip
 
 
@@ -269,30 +299,36 @@ def _parse_questions(text: str) -> tuple[list[str], list[bool | str | None]]:
 
 @dataclass
 class Certainty:
-    noul: float  # c(yes): the adapter's certainty in a prefilled "Yes"
+    # Granite: c(yes), the adapter's certainty in a prefilled "Yes". JEV-9B:
+    # the decision head's probability of "true".
+    noul: float
     prompt_tokens: int
     cached_tokens: int
 
 
 @dataclass
 class Reply:
-    text: str  # Granite's written answer to a freeform question
+    text: str  # a written answer to a freeform question
     prompt_tokens: int
     cached_tokens: int
 
 
 class EndpointWarmer:
-    """Wakes and warms the scale-to-zero endpoint once, shared by every visitor.
+    """Wakes and warms a scale-to-zero endpoint once, shared by every visitor.
+
+    `name` is the model's name in messages, `url` the endpoint's /v1 URL, and
+    `warm_up` a throwaway call to it.
 
     States: idle -> checking -> (waking) -> warming -> ready, or error.
     "Waking" means the endpoint answered 503 and is cold-starting. "Warming"
-    sends one throwaway uncertainty-adapter call so the first timed request
+    runs `warm_up` (one adapter call) so the first timed request
     doesn't pay for the new connection and first adapter call. "Ready" goes
     stale READY_TTL_S after the last use, ahead of HF's 15-minute scale-down,
     so the next visitor re-checks instead of trusting an endpoint that slept.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, name: str, url: str, warm_up) -> None:
+        self.name, self.url, self.warm_up = name, url, warm_up
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self.state = "idle"
@@ -319,7 +355,7 @@ class EndpointWarmer:
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         while True:
             try:
-                if httpx.get(f"{ENDPOINT_URL}/models", headers=headers, timeout=10).is_success:
+                if httpx.get(f"{self.url}/models", headers=headers, timeout=10).is_success:
                     break
             except httpx.HTTPError:
                 pass
@@ -331,7 +367,7 @@ class EndpointWarmer:
             time.sleep(10)
         self.state = "warming"
         try:
-            granite_noul("This is a warm-up request.", "Is this a warm-up request?")
+            self.warm_up()
         except Exception as e:  # surface any failure in the status line
             self.state, self.detail = "error", f"warm-up call failed: {e}"
             return
@@ -345,29 +381,34 @@ class EndpointWarmer:
         self.ensure()
         while not self.is_ready():
             if self.state == "error":
-                raise gr.Error(f"Granite Switch endpoint unavailable: {self.detail}. Try again shortly.")
+                raise gr.Error(f"{self.name} endpoint unavailable: {self.detail}. Try again shortly.")
             if time.time() - start > WAKE_TIMEOUT_S + 60:
-                raise gr.Error("The Granite Switch endpoint didn't wake up in time. Try again shortly.")
+                raise gr.Error(f"The {self.name} endpoint didn't wake up in time. Try again shortly.")
             time.sleep(1)
         return time.time() - start
 
     def status(self) -> str:
         elapsed = time.time() - self.started_at
+        label = f"**{self.name} endpoint:**"
         if self.is_ready():
-            return "**Granite endpoint:** ● ready"
+            return f"{label} ● ready"
         return {
-            "idle": "**Granite endpoint:** not checked yet",
-            "checking": "**Granite endpoint:** checking…",
-            "waking": f"**Granite endpoint:** ○ asleep, waking up ({elapsed:.0f} s so far; "
-            "a cold start takes about 3–5 min)",
-            "warming": "**Granite endpoint:** ◐ up, sending a warm-up request…",
-            "error": f"**Granite endpoint:** ✕ {self.detail}",
+            "idle": f"{label} not checked yet",
+            "checking": f"{label} checking…",
+            "waking": f"{label} ○ asleep, waking up ({elapsed:.0f} s so far; "
+            "a cold start takes about 3–6 min)",
+            "warming": f"{label} ◐ up, sending a warm-up request…",
+            "error": f"{label} ✕ {self.detail}",
             # "ready" but stale: it may have scaled to zero since.
-            "ready": "**Granite endpoint:** idle for a while; will re-check on next use",
+            "ready": f"{label} idle for a while; will re-check on next use",
         }[self.state]
 
 
-warmer = EndpointWarmer()
+warmer = EndpointWarmer(
+    "Granite Switch",
+    ENDPOINT_URL,
+    lambda: granite_noul("This is a warm-up request.", "Is this a warm-up request?"),
+)
 
 
 def _certainty(state: str, question: str, answer: str) -> tuple[float, int, int]:
@@ -501,6 +542,170 @@ def granite_course(state: str, questions: list[str], freeform: list[bool], resul
 
 
 # --------------------------------------------------------------------------- #
+# JEV-9B (its own vLLM endpoint)
+# --------------------------------------------------------------------------- #
+
+
+class Jev9bError(Exception):
+    """A call to the JEV-9B endpoint failed; the message is short enough to show on the page."""
+
+
+# One client, so the fan-out's requests share a connection pool and reach vLLM together.
+jev9b_http = httpx.Client(headers={"Authorization": f"Bearer {HF_TOKEN}"}, timeout=60.0)
+
+
+def _jev9b_post(route: str, payload: dict) -> dict:
+    try:
+        response = jev9b_http.post(f"{JEV9B_ENDPOINT_URL}{route}", json=payload)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        raise Jev9bError(f"HTTP {e.response.status_code} {e.response.text.strip()[:300]}")
+    except (httpx.HTTPError, ValueError) as e:
+        raise Jev9bError(str(e))
+
+
+def jev9b_noul(state: str, question: str) -> Certainty:
+    """One yes/no question as a noul from JEV-9B's decision head.
+
+    The model card's recipe: the decision prompt goes to the adapter as a plain
+    completion of one token, limited to the two option tokens, and their
+    log-probabilities come back. Adding the head's bias and dividing by the
+    temperature gives the calibrated distribution; the noul is its "true".
+    """
+    body = _jev9b_post(
+        "/completions",
+        {
+            "model": JEV9B_DECISION_MODEL,
+            "prompt": f"[kind] noul\n[state] {state}\n[question] {question}\n[options]\nfalse\ntrue\n[decision]:",
+            "max_tokens": 1,
+            "temperature": 1.0,
+            "logprobs": 2,
+            "allowed_token_ids": JEV9B_NOUL_IDS,
+            "add_special_tokens": False,
+            "return_tokens_as_token_ids": True,
+        },
+    )
+    try:
+        top = body["choices"][0]["logprobs"]["top_logprobs"][0]
+        logprobs = {int(token.split(":")[1]): value for token, value in top.items()}
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+        raise Jev9bError(f"unexpected reply: {e}")
+    logits = [
+        (logprobs.get(token_id, -1e9) + bias) / JEV9B_NOUL_TEMPERATURE
+        for token_id, bias in zip(JEV9B_NOUL_IDS, JEV9B_NOUL_BIAS)
+    ]
+    weights = [math.exp(z - max(logits)) for z in logits]
+    prompt, cached = _usage_tokens(body)
+    return Certainty(noul=weights[1] / sum(weights), prompt_tokens=prompt or 0, cached_tokens=cached or 0)
+
+
+def jev9b_freeform(state: str, question: str) -> Reply:
+    """A short written answer from JEV-9B's base model (no adapter), thinking off."""
+    body = _jev9b_post(
+        "/chat/completions",
+        {
+            "model": JEV9B_REPO,
+            "messages": [{"role": "user", "content": _freeform_prompt(state, question)}],
+            "max_tokens": FREEFORM_MAX_TOKENS,
+            "temperature": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+    )
+    try:
+        text = (body["choices"][0]["message"]["content"] or "").strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise Jev9bError(f"unexpected reply: {e}")
+    prompt, cached = _usage_tokens(body)
+    return Reply(text=text, prompt_tokens=prompt or 0, cached_tokens=cached or 0)
+
+
+# None when the Space has no JEV-9B endpoint to call.
+jev9b_warmer = (
+    EndpointWarmer(
+        JEV9B,
+        JEV9B_ENDPOINT_URL,
+        lambda: jev9b_noul("This is a warm-up request.", "Is this a warm-up request?"),
+    )
+    if JEV9B_ENDPOINT_URL
+    else None
+)
+JEV9B_UNSET = "JEV9B_ENDPOINT_URL is not set on this Space."
+
+
+def _jev9b_cache_line(replies: list, n: int) -> str:
+    """Cache reuse over the questions after the first, like Granite's line."""
+    later = [r for r in replies[1:] if isinstance(r, (Certainty, Reply))]
+    if not later:
+        return "single question, nothing to share"
+    return f"questions 2–{n} " + _reuse(sum(r.prompt_tokens for r in later), sum(r.cached_tokens for r in later))
+
+
+def jev9b_nouls(
+    context: str, questions: list[str], progress: list[str]
+) -> tuple[list[float | None] | None, float, str]:
+    """Return (nouls, seconds, status). nouls is None when every call fails.
+
+    A decision call per question, primed then fanned out like Granite's. Each
+    question's state is written into `progress` as it changes.
+    """
+
+    def ask(question: str):
+        try:
+            return jev9b_noul(context, question)
+        except Jev9bError as e:
+            return e
+
+    replies, split = _prime_then_fan_out(
+        [partial(_tracked, progress, i, partial(ask, q)) for i, q in enumerate(questions)]
+    )
+    errors = [r for r in replies if isinstance(r, Jev9bError)]
+    if len(errors) == len(replies):
+        return None, split["total_s"], f"calls failed: {errors[0]}"
+    n = len(questions)
+    status = (
+        f"`{JEV9B_REPO}` on vLLM, {JEV9B_HARDWARE}  \n"
+        f"Batching: 1 decision call per question · prime 1 question {split['prime_s'] * 1000:.0f} ms, "
+        f"then {n - 1} in parallel {split['fanout_s'] * 1000:.0f} ms · {_jev9b_cache_line(replies, n)}"
+    )
+    if errors:
+        status += f" · {len(errors)} call(s) failed, first: {errors[0]}"
+    return [None if isinstance(r, Jev9bError) else r.noul for r in replies], split["total_s"], status
+
+
+def jev9b_course(context: str, questions: list[str], freeform: list[bool], results: list, timing: dict) -> None:
+    """The Obstacle Course on JEV-9B: one question at a time, in order.
+
+    A decision call for a yes/no question, a chat completion on the base
+    model for a freeform one. Each result (a Certainty, a Reply, or None for
+    a failed call) is written into `results` as it arrives. Fills `timing`
+    with the seconds waited for the endpoint, the seconds taken and any
+    errors. An endpoint that's missing or won't wake leaves the model
+    unavailable instead of stopping the run.
+    """
+    timing["errors"] = []
+    try:
+        if jev9b_warmer is None:
+            raise gr.Error(JEV9B_UNSET)
+        timing["wake_s"] = jev9b_warmer.wait_ready()
+    except gr.Error as e:
+        timing["unavailable"] = e.message
+        results[:] = [None] * len(questions)
+        return
+    start = timing["start"] = time.perf_counter()
+    for i, (question, is_freeform) in enumerate(zip(questions, freeform)):
+        try:
+            results[i] = (jev9b_freeform if is_freeform else jev9b_noul)(context, question)
+        except Jev9bError as e:
+            results[i] = None
+            timing["errors"].append(str(e))
+    timing["total_s"] = time.perf_counter() - start
+    jev9b_warmer.touch()
+    if len(timing["errors"]) == len(questions):
+        timing["unavailable"] = f"calls failed: {timing['errors'][0]}"
+
+
+# --------------------------------------------------------------------------- #
 # Cache reuse, as each API reports it
 # --------------------------------------------------------------------------- #
 
@@ -565,6 +770,48 @@ def jev_nouls(state, questions: list[str]) -> tuple[list[float] | None, float, s
         elapsed,
         f"`{response.model}` via OpenRouter · {_reuse(*usage)}",
     )
+
+
+def jev_course(state, questions: list[str], freeform: list[bool], results: list, timing: dict) -> None:
+    """The Obstacle Course on Jev: one question at a time, until a freeform one.
+
+    Jev returns decisions only. Each yes/no question is its own System One
+    request, and its noul is written into `results` as it arrives. The first
+    freeform question puts Jev out of the race: that question is marked
+    JEV_OUT, the rest OUT, and `timing` gets "failed_at" (the question's
+    index) and "answered_s" (the seconds spent before it). A run with no
+    freeform question finishes normally and fills "total_s". A missing key or
+    a failed call leaves Jev "unavailable".
+    """
+    timing["usage"] = []
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        timing["unavailable"] = "OPENROUTER_API_KEY is not set on this Space."
+        results[:] = [OUT] * len(questions)
+        return
+    start = timing["start"] = time.perf_counter()
+    try:
+        with TypeSafeClient(
+            api_key=api_key, base_url=OPENROUTER_BASE_URL, model=JEV_MODEL, timeout=30.0
+        ) as client:
+            for i, (question, is_freeform) in enumerate(zip(questions, freeform)):
+                if is_freeform:
+                    timing["failed_at"] = i
+                    timing["answered_s"] = time.perf_counter() - start
+                    results[i:] = [JEV_OUT] + [OUT] * (len(questions) - i - 1)
+                    return
+                response = client.system_one(state=state, questions={"q1": Noul(instructions=question)})
+                results[i] = response.nouls["q1"].noul
+                timing["model"] = response.model
+                try:
+                    timing["usage"].append(_usage_tokens(response.raw_http_response.json()))
+                except (TypeSafeError, ValueError, AttributeError):
+                    timing["usage"].append((None, None))
+    except TypeSafeError as e:
+        timing["unavailable"] = f"Jev call failed: {e}"
+        results[:] = [OUT if r is PENDING else r for r in results]
+        return
+    timing["total_s"] = time.perf_counter() - start
 
 
 # --------------------------------------------------------------------------- #
@@ -787,7 +1034,7 @@ GENERATE_LABEL = "Generate questions"
 RANDOM_LABEL = "🎲 Random Wikipedia article"
 # The order of the tiles, the progress rows and the table columns. Jev is
 # always last, however many models race.
-MODEL_NAMES = ["Granite Switch", "GPT Luna", "Jev"]
+MODEL_NAMES = ["Granite Switch", JEV9B, "GPT Luna", "Jev"]
 EMPTY_RESULTS = [(name, None, None) for name in MODEL_NAMES]
 GREY = "#9ca3af"  # the Jev column on the Obstacle Course, where Jev isn't run
 
@@ -801,10 +1048,11 @@ PAGES = {
         "header": (
             "### Results\n"
             "A noul above 0.5 counts as a yes, and ✓ / ✗ marks it against the answer "
-            "on the question's line. Granite noul: c('yes'), the UQ aLoRA's certainty in a prefilled 'Yes'."
+            "on the question's line. Granite noul: c('yes'), the UQ aLoRA's certainty in a prefilled 'Yes'. "
+            f"{JEV9B} is AutoTrust's open reproduction of Jev, on its own endpoint."
         ),
-        "table_headers": ["Question", "Answer", "Granite noul", "Luna noul", "Jev noul"],
-        "column_widths": ["43%", "9%", "16%", "16%", "16%"],
+        "table_headers": ["Question", "Answer", "Granite noul", f"{JEV9B} noul", "Luna noul", "Jev noul"],
+        "column_widths": ["34%", "8%", "15%", "15%", "14%", "14%"],
         "questions_label": (
             f"Yes/no questions, one per line (up to {MAX_QUESTIONS}), each "
             "followed by its answer: “…? Yes” or “…? No”"
@@ -819,7 +1067,7 @@ PAGES = {
         "tab": "Obstacle Course",
         "run_label": "🚧 Run the Obstacle Course",
         "api_prefix": "obstacle_",
-        "sits_out": ("Jev",),
+        "sits_out": (),
         "header": (
             "### Results\n"
             "Yes/no questions go to each model's System One call and come back as a noul: "
@@ -827,10 +1075,13 @@ PAGES = {
             "question's line. Freeform questions go to a chat completion and come back as a "
             "written answer, which isn't scored. Each model takes the questions one at a "
             "time, in order, and the table fills in as answers come back. Jev returns "
-            "decisions only and can't take freeform questions, so it isn't run here."
+            "decisions only: it answers until it meets a freeform question, and then it's out "
+            "of the race and its tiles read N/A. "
+            f"{JEV9B} is AutoTrust's open reproduction of Jev, on its own endpoint; its base "
+            "model answers the freeform questions."
         ),
-        "table_headers": ["Question", "Answer", "Granite Switch", "GPT Luna", "Jev"],
-        "column_widths": ["26%", "10%", "28%", "28%", "8%"],
+        "table_headers": ["Question", "Answer", "Granite Switch", JEV9B, "GPT Luna", "Jev"],
+        "column_widths": ["22%", "9%", "21%", "21%", "20%", "7%"],
         "questions_label": (
             f"Questions, one per line (up to {MAX_QUESTIONS}). Yes/no: “…? Yes” or "
             "“…? No”. Open-ended: “…? Freeform”"
@@ -853,8 +1104,8 @@ def on_generate(context: str, obstacle: bool = False):
 
     The questions appear in the box as the model writes them. On the Obstacle
     Course the set is a mix of yes/no and open-ended ("...? Freeform")
-    questions, put in a random order once they're all in. Yields (questions,
-    status).
+    questions, put in a random order once they're all in, with a yes/no
+    question first. Yields (questions, status).
     """
     if not context.strip():
         raise gr.Error(f"Enter some context first, or click {RANDOM_LABEL}.")
@@ -890,6 +1141,12 @@ def on_generate(context: str, obstacle: bool = False):
         raise gr.Error(f"`{QUESTION_MODEL}` didn't return any usable questions. Try again.")
     if obstacle:
         random.shuffle(pairs)  # which positions are freeform is random
+        # ...except the first: always a yes/no question, so Jev gets to start.
+        # A freeform question that lands first swaps places with a random yes/no one.
+        yes_no_at = [i for i, (_, a) in enumerate(pairs) if a != FREEFORM]
+        if yes_no_at and pairs[0][1] == FREEFORM:
+            swap = random.choice(yes_no_at)
+            pairs[0], pairs[swap] = pairs[swap], pairs[0]
     yes = sum(a is True for _, a in yes_no)
     counts = f"{yes} yes, {len(yes_no) - yes} no"
     if obstacle:
@@ -1023,7 +1280,8 @@ def _progress_html(
     `rows` is one (name, states) per model, a state per question. A cell is
     yellow while its question is in progress and blue once it's complete. The
     `winner`'s row is green instead of blue. A model named in `sits_out`
-    isn't run: its row is grey throughout.
+    is out of the race: its row is light red, apart from any questions it
+    completed before it dropped out.
     """
     n = len(rows[0][1]) if rows else 0
     if not n:
@@ -1033,11 +1291,12 @@ def _progress_html(
         out = name in sits_out
         won = " winner" if name == winner else ""
         cells.append(f'<div class="progress-name{" sits-out" if out else ""}">{name}</div>')
-        cells += [
-            f'<div class="progress-cell {"sits-out" if out else s + won}" '
-            f'title="{name} · question {i}: {"not run" if out else PROGRESS_TITLES[s]}"></div>'
-            for i, s in enumerate(states, 1)
-        ]
+        for i, s in enumerate(states, 1):
+            grey = out and s != DONE
+            cells.append(
+                f'<div class="progress-cell {"sits-out" if grey else s + won}" '
+                f'title="{name} · question {i}: {"not run" if grey else PROGRESS_TITLES[s]}"></div>'
+            )
     return (
         f'<div class="progress-grid" style="grid-template-columns: max-content repeat({n}, minmax(0, 1fr))">'
         f'{"".join(cells)}</div>'
@@ -1072,7 +1331,7 @@ def _course_progress(results: list, clock: dict) -> list[str]:
     """Progress of a model that takes the questions one at a time, in order."""
     if "start" not in clock:
         return [TODO] * len(results)
-    states = [TODO if r is PENDING else DONE for r in results]
+    states = [TODO if any(r is mark for mark in (PENDING, JEV_OUT, OUT)) else DONE for r in results]
     if "total_s" not in clock and TODO in states:
         states[states.index(TODO)] = RUNNING
     return states
@@ -1144,12 +1403,12 @@ def race(context: str, questions_text: str):
 
     The first update clears the last run, so the page responds the moment the
     button is clicked. While the models run, the latency tiles are stopwatches;
-    when all three are back, the tiles show the final figures and the fastest
+    when all four are back, the tiles show the final figures and the fastest
     model's latency tile turns green. Under the tiles, the progress strip
     shows each model's questions turning yellow, then blue; the row of the
     first model to finish turns green. Outputs, in order:
-    tiles and progress strip, table, Granite timing, Jev timing, Luna timing,
-    endpoint status.
+    tiles and progress strip, table, Granite timing, JEV-9B timing, Jev timing,
+    Luna timing, endpoint status.
     """
     if not context.strip():
         raise gr.Error("Enter some context for the models to decide about.")
@@ -1159,15 +1418,17 @@ def race(context: str, questions_text: str):
     n = len(questions)
     clocks: dict[str, dict] = {name: {} for name in MODEL_NAMES}
     granite_progress = [TODO] * n
+    jev9b_progress = [TODO] * n
 
     def progress(jev_ok: bool = True, luna_ok: bool = True) -> list[tuple[str, list[str]]]:
         return [
             ("Granite Switch", granite_progress),
+            (JEV9B, jev9b_progress),
             ("GPT Luna", _batch_progress(clocks["GPT Luna"], n, luna_ok)),
             ("Jev", _batch_progress(clocks["Jev"], n, jev_ok)),
         ]
 
-    yield _board_html(progress(), EMPTY_RESULTS, running=True), None, "", "", "", gr.skip()
+    yield _board_html(progress(), EMPTY_RESULTS, running=True), None, "", "", "", "", gr.skip()
 
     def granite_run():
         # Granite's stopwatch starts once the endpoint is awake.
@@ -1176,18 +1437,35 @@ def race(context: str, questions_text: str):
         warmer.touch()
         return waited, result
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    def jev9b_run():
+        # As for Granite, but an endpoint that's missing or won't wake leaves
+        # JEV-9B unavailable instead of stopping the race.
+        if jev9b_warmer is None:
+            return None, 0.0, JEV9B_UNSET
+        try:
+            waited = jev9b_warmer.wait_ready()
+        except gr.Error as e:
+            return None, 0.0, e.message
+        nouls, seconds, status = _clocked(clocks[JEV9B], jev9b_nouls, context, questions, jev9b_progress)
+        jev9b_warmer.touch()
+        if waited > 5:
+            status += f" · waited {waited:.0f} s for the endpoint to wake (not counted)"
+        return nouls, seconds, status
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
         granite_future = pool.submit(granite_run)
+        jev9b_future = pool.submit(jev9b_run)
         jev_future = pool.submit(_clocked, clocks["Jev"], jev_nouls, _parse_state(context), questions)
         luna_future = pool.submit(_clocked, clocks["GPT Luna"], luna_nouls, context, questions)
-        runs = [granite_future, jev_future, luna_future]
+        runs = [granite_future, jev9b_future, jev_future, luna_future]
         while not all(run.done() for run in runs):
             time.sleep(STOPWATCH_TICK_S)
             yield (
                 _board_html(progress(), **_stopwatches(clocks)),
-                gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+                gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
             )
         wake_s, (granite, g_time) = granite_future.result()
+        jev9b, jev9b_s, jev9b_status = jev9b_future.result()
         jev, jev_s, jev_status = jev_future.result()
         luna, luna_s, luna_status = luna_future.result()
 
@@ -1197,6 +1475,9 @@ def race(context: str, questions_text: str):
             "Question": questions,
             "Answer": [_answer_cell(e) for e in expected],
             "Granite noul": [_noul_cell(n, e) for n, e in zip(granite_nouls_, expected)],
+            f"{JEV9B} noul": [
+                _noul_cell(None if jev9b is None else jev9b[i], e) for i, e in enumerate(expected)
+            ],
             "Luna noul": [
                 _noul_cell(None if luna is None else luna[i], e) for i, e in enumerate(expected)
             ],
@@ -1218,55 +1499,68 @@ def race(context: str, questions_text: str):
         progress(jev_ok=jev is not None, luna_ok=luna is not None),
         [
             ("Granite Switch", g_time["total_s"] * 1000, _accuracy(granite_nouls_, expected)),
+            (JEV9B, jev9b_s * 1000 if jev9b is not None else None, _accuracy(jev9b, expected)),
             ("GPT Luna", luna_s * 1000 if luna is not None else None, _accuracy(luna, expected)),
             ("Jev", jev_s * 1000 if jev is not None else None, _accuracy(jev, expected)),
         ],
     )
     yield (
         stats, table, timing,
+        _reference_timing_md(JEV9B, jev9b, jev9b_s, jev9b_status),
         _reference_timing_md("Jev", jev, jev_s, jev_status),
         _reference_timing_md("GPT Luna", luna, luna_s, luna_status),
-        warmer.status(),
+        endpoints_status(),
     )
 
 
+def _plain(results: list) -> list:
+    """Results with each Certainty or Reply replaced by its noul or its text."""
+    return [r.text if isinstance(r, Reply) else r.noul if isinstance(r, Certainty) else r for r in results]
+
+
 def _course_cell(result, expected: bool | None, is_freeform: bool) -> str:
-    if result is PENDING:
-        return PENDING
+    if result is PENDING or result is OUT:
+        return result
     if is_freeform:
         return "—" if result is None else str(result)
     return _noul_cell(result, expected)
 
 
 def obstacle_course(context: str, questions_text: str):
-    """Run a mix of yes/no and freeform questions on Granite and Luna, one at a time.
+    """Run a mix of yes/no and freeform questions on every model, one at a time.
 
     A yes/no question goes to the model's System One call and comes back as a
     noul; a freeform one ("...? Freeform") goes to a chat completion and
     comes back as text. Each model works through the questions in order, and
-    doesn't send one until the one before it has come back; the two models
+    doesn't send one until the one before it has come back; the four models
     run side by side. While they run, the latency tiles are stopwatches and
-    the table fills in as answers arrive. Once both have finished, the tiles
-    show the final figures, the faster model's latency tile turns green, and
-    the timing lines are filled in. Jev can't
-    take freeform questions, so it isn't run: its tiles, its column and its
-    row on the progress strip are greyed out. Same outputs as `race`.
+    the table fills in as answers arrive. Once all have finished, the tiles
+    show the final figures, the fastest model's latency tile turns green, and
+    the timing lines are filled in. Jev can't take freeform questions: it
+    runs until it meets one, and from then on it's out of the race, with its
+    tiles reading N/A, the rest of its row on the progress strip light red
+    and the rest of its column greyed out. Same outputs as `race`.
     """
-    sits_out = PAGES["obstacle"]["sits_out"]
     if not context.strip():
         raise gr.Error("Enter some context for the models to work from.")
     questions, answers = _parse_questions(questions_text)
     freeform = [a == FREEFORM for a in answers]
     expected = [a if isinstance(a, bool) else None for a in answers]
     granite: list = [PENDING] * len(questions)
+    jev9b: list = [PENDING] * len(questions)
     luna: list = [PENDING] * len(questions)
+    jev: list = [PENDING] * len(questions)
     g_time: dict = {}
+    jev9b_time: dict = {}
     luna_time: dict = {}
+    jev_time: dict = {}
+
+    def sits_out() -> tuple[str, ...]:
+        # Jev is out once it has met a freeform question (or can't be called).
+        return ("Jev",) if "failed_at" in jev_time or "unavailable" in jev_time else ()
 
     def table():
-        granite_results = [
-            g.text if isinstance(g, Reply) else g.noul if isinstance(g, Certainty) else g for g in granite
-        ]
+        granite_results = _plain(granite)
         frame = pd.DataFrame(
             {
                 "Question": questions,
@@ -1274,38 +1568,45 @@ def obstacle_course(context: str, questions_text: str):
                 "Granite Switch": [
                     _course_cell(r, e, f) for r, e, f in zip(granite_results, expected, freeform)
                 ],
+                JEV9B: [_course_cell(r, e, f) for r, e, f in zip(_plain(jev9b), expected, freeform)],
                 "GPT Luna": [_course_cell(r, e, f) for r, e, f in zip(luna, expected, freeform)],
-                "Jev": ["N/A"] * len(questions),
+                "Jev": [_course_cell(r, e, f) for r, e, f in zip(jev, expected, freeform)],
             }
         )
-        return granite_results, frame.style.set_properties(subset=["Jev"], color=GREY)
+        # Grey the questions Jev couldn't answer or never reached.
+        return granite_results, frame.style.map(
+            lambda cell: f"color: {GREY}" if cell in (JEV_OUT, OUT) else "", subset=["Jev"]
+        )
 
     def progress() -> list[tuple[str, list[str]]]:
         return [
             ("Granite Switch", _course_progress(granite, g_time)),
+            (JEV9B, _course_progress(jev9b, jev9b_time)),
             ("GPT Luna", _course_progress(luna, luna_time)),
-            ("Jev", [TODO] * len(questions)),
+            ("Jev", _course_progress(jev, jev_time)),
         ]
 
     yield (
-        _board_html(progress(), EMPTY_RESULTS, running=True, sits_out=sits_out),
-        table()[1], "", "", "", gr.skip(),
+        _board_html(progress(), EMPTY_RESULTS, running=True),
+        table()[1], "", "", "", "", gr.skip(),
     )
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         runs = [
             pool.submit(granite_course, context, questions, freeform, granite, g_time),
+            pool.submit(jev9b_course, context, questions, freeform, jev9b, jev9b_time),
             pool.submit(luna_course, context, questions, freeform, luna, luna_time),
+            pool.submit(jev_course, _parse_state(context), questions, freeform, jev, jev_time),
         ]
-        clocks = {"Granite Switch": g_time, "GPT Luna": luna_time}
+        clocks = {"Granite Switch": g_time, JEV9B: jev9b_time, "GPT Luna": luna_time, "Jev": jev_time}
         shown = None
         while not all(run.done() for run in runs):
             time.sleep(STOPWATCH_TICK_S)
-            arrived = sum(r is not PENDING for r in granite + luna)
+            arrived = sum(r is not PENDING for r in granite + jev9b + luna + jev)
             yield (
-                _board_html(progress(), **_stopwatches(clocks), sits_out=sits_out),
+                _board_html(progress(), **_stopwatches(clocks), sits_out=sits_out()),
                 table()[1] if arrived != shown else gr.skip(),
-                gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+                gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
             )
             shown = arrived
         for run in runs:
@@ -1328,6 +1629,21 @@ def obstacle_course(context: str, questions_text: str):
             "\n\n**Not scored:** none of the questions has a Yes or No answer, so there's "
             "no accuracy to show."
         )
+    jev9b_ok = "unavailable" not in jev9b_time
+    jev9b_results = _plain(jev9b)
+    if jev9b_ok:
+        jev9b_wake_s = jev9b_time.get("wake_s", 0.0)
+        jev9b_md = (
+            f"**{JEV9B}:** {jev9b_time['total_s'] * 1000:.0f} ms end to end "
+            f"for {n} question(s) · `{JEV9B_REPO}` on vLLM, {JEV9B_HARDWARE}"
+            + (f" · waited {jev9b_wake_s:.0f} s for the endpoint to wake (not counted)" if jev9b_wake_s > 5 else "")
+            + f"  \nOne at a time: {n - n_free} decision call(s) for yes/no, {n_free} chat completion(s) "
+            f"for freeform (up to {FREEFORM_MAX_TOKENS} tokens each) · {_jev9b_cache_line(jev9b, n)}"
+        )
+        if jev9b_time["errors"]:
+            jev9b_md += f" · {len(jev9b_time['errors'])} call(s) failed, first: {jev9b_time['errors'][0]}"
+    else:
+        jev9b_md = f"**{JEV9B}:** unavailable · {jev9b_time['unavailable']}"
     luna_ok = "unavailable" not in luna_time
     if luna_ok:
         luna_status = (
@@ -1344,26 +1660,61 @@ def obstacle_course(context: str, questions_text: str):
         progress(),
         [
             ("Granite Switch", g_time["total_s"] * 1000, _accuracy(granite_results, expected)),
+            (
+                JEV9B,
+                jev9b_time["total_s"] * 1000 if jev9b_ok else None,
+                _accuracy(jev9b_results, expected) if jev9b_ok else None,
+            ),
             ("GPT Luna", luna_time["total_s"] * 1000 if luna_ok else None, _accuracy(luna, expected) if luna_ok else None),
-            ("Jev", None, None),
+            (
+                "Jev",
+                jev_time["total_s"] * 1000 if "total_s" in jev_time else None,
+                _accuracy(jev, expected) if "total_s" in jev_time else None,
+            ),
         ],
-        sits_out=sits_out,
+        sits_out=sits_out(),
     )
+    if "unavailable" in jev_time:
+        jev_md = f"**Jev:** unavailable · {jev_time['unavailable']}"
+    elif "failed_at" in jev_time:
+        answered = jev_time["failed_at"]
+        jev_md = (
+            f'<span style="color: {GREY}">**Jev:** out at question {answered + 1}. Jev returns '
+            f"decisions only and can't take a freeform question. Before that it answered "
+            f"{answered} question(s) in {jev_time['answered_s'] * 1000:.0f} ms, one System One "
+            "request each, via OpenRouter.</span>"
+        )
+    else:
+        jev_md = (
+            f"**Jev:** {jev_time['total_s'] * 1000:.0f} ms end to end · one at a time: {n} System One "
+            f"request(s) (`{jev_time.get('model', JEV_MODEL)}` via OpenRouter) · "
+            f"{_reuse(*_total_usage(jev_time['usage']))}"
+        )
     yield (
         stats,
         styled,
         timing,
-        f'<span style="color: {GREY}">**Jev:** not run. Jev returns decisions only and '
-        "can't take freeform questions.</span>",
+        jev9b_md,
+        jev_md,
         luna_md,
-        warmer.status(),
+        endpoints_status(),
     )
 
 
+def endpoints_status() -> str:
+    """The status line under the tabs: one line per scale-to-zero endpoint."""
+    lines = [warmer.status()]
+    if jev9b_warmer is not None:
+        lines.append(jev9b_warmer.status())
+    return "  \n".join(lines)
+
+
 def on_page_load() -> str:
-    """Start waking the endpoint as soon as someone opens the page."""
+    """Start waking the endpoints as soon as someone opens the page."""
     warmer.ensure()
-    return warmer.status()
+    if jev9b_warmer is not None:
+        jev9b_warmer.ensure()
+    return endpoints_status()
 
 
 # The big metric tiles. Selectors are our own classes, not Gradio internals.
@@ -1378,7 +1729,7 @@ CSS = """
 /* The latency tile of the fastest model to finish. */
 .e2e-tile.winner { background: #c9f0d6; border-color: #2e9e5b; }
 .dark .e2e-tile.winner { background: #17512e; border-color: #3fb872; }
-.e2e-value { font-size: 2.4rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.e2e-value { font-size: 2rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .e2e-label { font-size: 0.9rem; margin-top: 2px; }
 /* The progress strip: a row per model, a column per question. */
 .progress-grid { display: grid; gap: 3px; align-items: center; margin: var(--spacing-md) 0; font-size: 0.8rem; }
@@ -1393,8 +1744,8 @@ CSS = """
 /* The row of the fastest model to finish: the same green as its latency tile's border. */
 .progress-cell.done.winner { background: #2e9e5b; border-color: #23804a; }
 .dark .progress-cell.done.winner { background: #3fb872; border-color: #2e9e5b; }
-/* A model that isn't run: the same grey as its table column. */
-.progress-cell.sits-out { background: #9ca3af; border-color: #9ca3af; }
+/* Questions a model that's out of the race never got to: light red. */
+.progress-cell.sits-out { background: #fecaca; border-color: #f87171; }
 .progress-name.sits-out { color: #9ca3af; }
 """
 
@@ -1431,12 +1782,13 @@ def build_page(kind: str, endpoint_status: gr.Markdown) -> None:
             table = gr.Dataframe(
                 elem_id=f"{kind}-results-table",
                 headers=page["table_headers"],
-                datatype=["str", "str", "str", "str", "str"],
+                datatype=["str"] * len(page["table_headers"]),
                 column_widths=page["column_widths"],
                 interactive=False,
                 wrap=True,
             )
             timing = gr.Markdown()
+            jev9b_timing = gr.Markdown()
             luna_timing = gr.Markdown()
             jev_timing = gr.Markdown()
     # A new article makes the old questions stale, so clear them.
@@ -1450,7 +1802,7 @@ def build_page(kind: str, endpoint_status: gr.Markdown) -> None:
     run.click(
         obstacle_course if obstacle else race,
         [state, questions],
-        [stats, table, timing, jev_timing, luna_timing, endpoint_status],
+        [stats, table, timing, jev9b_timing, jev_timing, luna_timing, endpoint_status],
         api_name=f"{prefix}race",
     )
 
@@ -1458,7 +1810,7 @@ def build_page(kind: str, endpoint_status: gr.Markdown) -> None:
 with gr.Blocks(title="Noul Race") as demo:
     gr.Markdown("# 🏁 Noul Race")
     # One endpoint status line under the tabs, shared by both.
-    endpoint_status = gr.Markdown(warmer.status(), render=False)
+    endpoint_status = gr.Markdown(endpoints_status(), render=False)
     with gr.Tabs():
         # The Obstacle Course is the first tab, so it's the one the page opens on.
         for kind in ("obstacle", "race"):
@@ -1473,6 +1825,11 @@ with gr.Blocks(title="Noul Race") as demo:
         "**Granite noul:** the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), "
         "and the certainty is the probability-weighted average of those bins, so the "
         "Granite noul always falls between 0.05 and 0.95.\n\n"
+        f"**{JEV9B}:** [`{JEV9B_REPO}`](https://huggingface.co/{JEV9B_REPO}), AutoTrust's open "
+        "reproduction of Jev (not a TypeSafe model), served by vLLM on "
+        f"{JEV9B_HARDWARE} on its own Inference Endpoint. A yes/no question is one call to its "
+        "decision adapter, and the noul is the probability of 'true'; a freeform question goes "
+        "to its base model. That endpoint scales to zero too, and waking it isn't counted.\n\n"
         "**Cache reuse:** each timing line under the table reports how many prompt tokens "
         "that model's API says it read from cache, even when that's 0, or that the API "
         "doesn't report it.\n\n"
@@ -1483,7 +1840,7 @@ with gr.Blocks(title="Noul Race") as demo:
     )
     # Wake on page load, and keep the status line current while it wakes.
     demo.load(on_page_load, outputs=endpoint_status, show_progress="hidden")
-    gr.Timer(3).tick(warmer.status, outputs=endpoint_status, show_progress="hidden", queue=False)
+    gr.Timer(3).tick(endpoints_status, outputs=endpoint_status, show_progress="hidden", queue=False)
 
 if __name__ == "__main__":
     demo.launch(css=CSS)
