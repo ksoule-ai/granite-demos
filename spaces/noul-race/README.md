@@ -53,7 +53,8 @@ is all yes/no questions across all three models.
    from each line and each model's noul with ✓ or ✗.
 
 Six tiles summarize the race, one column per model: **end-to-end latency** on
-top and, beneath it, **accuracy** against the answer key. While the models run,
+top and, beneath it, **Noul accuracy**: how many of the model's nouls land on
+the right side of 0.5 for the answer key ("7/10 Nouls correct"). While the models run,
 each latency tile is a stopwatch showing that model's elapsed time; a model's
 stopwatch stops when its answers are back. The latency tile of the first model
 to finish turns green straight away, without waiting for the others. Both tabs
@@ -61,9 +62,14 @@ work this way.
 
 Under the tiles, a **progress strip** shows the race as it happens: a row per
 model and a column per question. A cell turns yellow while its question is in
-progress and blue once it's complete. On this tab Jev and Luna take all the
+progress and blue once it's complete. The row of the first model to finish
+turns green, along with its latency tile. On this tab Jev and Luna take all the
 questions in one request, so their rows change together; Granite's first
 question runs alone, then the rest together.
+
+Under the table, each model's timing line reports its **cache reuse**: how many
+prompt tokens its API says it read from cache, even when that's 0. Jev's API
+doesn't report one, and its line says so.
 
 A question with no answer after it still gets nouls but isn't scored.
 

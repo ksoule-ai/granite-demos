@@ -56,7 +56,9 @@ compute the context once and reuse it for every question:
 2. **Fan out:** send the other questions concurrently. vLLM batches them, and
    each prefills only its own question plus the prefilled "Yes".
 
-vLLM's ``cached_tokens`` usage is reported so the cache hits are visible.
+vLLM's ``cached_tokens`` usage is reported so the cache hits are visible. The
+other models' timing lines report the cached prompt tokens their APIs return,
+even when that's 0.
 """
 
 import json
@@ -499,6 +501,38 @@ def granite_course(state: str, questions: list[str], freeform: list[bool], resul
 
 
 # --------------------------------------------------------------------------- #
+# Cache reuse, as each API reports it
+# --------------------------------------------------------------------------- #
+
+
+def _usage_tokens(body: dict) -> tuple[int | None, int | None]:
+    """(prompt tokens, cached prompt tokens) from a response body's usage.
+
+    Reads both namings: chat completions' prompt_tokens(_details) and the
+    Decisions and System One APIs' input_tokens(_details). A count the API
+    doesn't report is None.
+    """
+    usage = body.get("usage") or {}
+    prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    return prompt, details.get("cached_tokens")
+
+
+def _total_usage(usages: list[tuple[int | None, int | None]]) -> tuple[int, int | None]:
+    """Sum (prompt, cached) pairs; cached stays None when no request reported it."""
+    cached = [c for _, c in usages if c is not None]
+    return sum(p or 0 for p, _ in usages), sum(cached) if cached else None
+
+
+def _reuse(prompt: int | None, cached: int | None) -> str:
+    """The cache-reuse note on a model's timing line. Shown even when it's 0."""
+    if cached is None:
+        return "cache reuse not reported by the API"
+    share = f" ({cached / prompt:.0%})" if prompt else ""
+    return f"reused {cached} of {prompt or 0} prompt tokens from cache{share}"
+
+
+# --------------------------------------------------------------------------- #
 # Jev (real API)
 # --------------------------------------------------------------------------- #
 
@@ -521,10 +555,15 @@ def jev_nouls(state, questions: list[str]) -> tuple[list[float] | None, float, s
     except TypeSafeError as e:
         return None, time.perf_counter() - start, f"Jev call failed: {e}"
     elapsed = time.perf_counter() - start
+    # The SDK's usage has no cache field, so read the raw reply for one.
+    try:
+        usage = _usage_tokens(response.raw_http_response.json())
+    except (TypeSafeError, ValueError, AttributeError):
+        usage = (None, None)
     return (
         [response.nouls[k].noul for k in keys],
         elapsed,
-        f"`{response.model}` via OpenRouter",
+        f"`{response.model}` via OpenRouter · {_reuse(*usage)}",
     )
 
 
@@ -550,11 +589,14 @@ def _luna_post(url: str, api_key: str, payload: dict) -> dict:
         raise LunaError(str(e))
 
 
-def _luna_decisions(api_key: str, context: str, questions: list[str]) -> list[float | None]:
+def _luna_decisions(
+    api_key: str, context: str, questions: list[str]
+) -> tuple[list[float | None], tuple[int | None, int | None]]:
     """Every question in one Decisions request, each as a "predicate".
 
     A predicate's answer carries the probability that it's true. A question
     Luna refuses to answer comes back without a probability and is left as None.
+    Returns the nouls and the request's (prompt tokens, cached tokens).
     """
     keys = [f"q{i}" for i in range(1, len(questions) + 1)]
     body = _luna_post(
@@ -572,11 +614,11 @@ def _luna_decisions(api_key: str, context: str, questions: list[str]) -> list[fl
         answers = {a["name"]: a for a in body["answers"]}
     except (KeyError, TypeError) as e:
         raise LunaError(f"unexpected reply: {e}")
-    return [answers.get(k, {}).get("probability") for k in keys]
+    return [answers.get(k, {}).get("probability") for k in keys], _usage_tokens(body)
 
 
-def _luna_chat(api_key: str, context: str, question: str) -> str:
-    """One freeform question's answer from a chat completion."""
+def _luna_chat(api_key: str, context: str, question: str) -> tuple[str, tuple[int | None, int | None]]:
+    """One freeform question's answer from a chat completion, and its (prompt tokens, cached tokens)."""
     body = _luna_post(
         OPENAI_CHAT_URL,
         api_key,
@@ -590,7 +632,7 @@ def _luna_chat(api_key: str, context: str, question: str) -> str:
         },
     )
     try:
-        return (body["choices"][0]["message"]["content"] or "").strip()
+        return (body["choices"][0]["message"]["content"] or "").strip(), _usage_tokens(body)
     except (KeyError, IndexError, TypeError) as e:
         raise LunaError(f"unexpected reply: {e}")
 
@@ -602,12 +644,12 @@ def luna_nouls(context: str, questions: list[str]) -> tuple[list[float | None] |
         return None, 0.0, "OPENAI_API_KEY is not set on this Space."
     start = time.perf_counter()
     try:
-        nouls = _luna_decisions(api_key, context, questions)
+        nouls, usage = _luna_decisions(api_key, context, questions)
     except LunaError as e:
         return None, time.perf_counter() - start, f"Luna call failed: {e}"
     elapsed = time.perf_counter() - start
     refused = sum(n is None for n in nouls)
-    status = f"`{LUNA_MODEL}` via OpenAI's Decisions API"
+    status = f"`{LUNA_MODEL}` via OpenAI's Decisions API, 1 request for every question · {_reuse(*usage)}"
     if refused:
         status += f" · {refused} question(s) refused"
     return nouls, elapsed, status
@@ -622,9 +664,10 @@ def luna_course(
     freeform one; the next isn't sent until the last has come back. Each
     result (a noul, a written answer, or None for a refusal or a failed call)
     is written into `results` as it arrives. Fills `timing` with the seconds
-    taken and any errors.
+    taken, each request's token usage and any errors.
     """
     timing["errors"] = []
+    timing["usage"] = []
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         timing["unavailable"] = "OPENAI_API_KEY is not set on this Space."
@@ -634,9 +677,11 @@ def luna_course(
     for i, (question, is_freeform) in enumerate(zip(questions, freeform)):
         try:
             if is_freeform:
-                results[i] = _luna_chat(api_key, context, question)
+                results[i], usage = _luna_chat(api_key, context, question)
             else:
-                results[i] = _luna_decisions(api_key, context, [question])[0]
+                nouls, usage = _luna_decisions(api_key, context, [question])
+                results[i] = nouls[0]
+            timing["usage"].append(usage)
         except LunaError as e:
             results[i] = None
             timing["errors"].append(str(e))
@@ -893,6 +938,26 @@ def _answer_cell(answer: bool | str | None) -> str:
 STOPWATCH_TICK_S = 0.1  # how often the running stopwatches are redrawn
 
 
+def _winner(
+    results: list[tuple[str, float | None, tuple[int, int] | None]],
+    running: bool = False,
+    sits_out: tuple[str, ...] = (),
+    finished: tuple[str, ...] = (),
+) -> str | None:
+    """The fastest model that has finished, or None when none has.
+
+    While `running`, only the models named in `finished` are in contention,
+    so there's a winner the moment the first model is done, without waiting
+    for the others. A model named in `sits_out` isn't run and can't win.
+    """
+    done = [
+        (ms, name)
+        for name, ms, _ in results
+        if ms is not None and name not in sits_out and (name in finished or not running)
+    ]
+    return min(done)[1] if done else None
+
+
 def _stats_html(
     results: list[tuple[str, float | None, tuple[int, int] | None]],
     running: bool = False,
@@ -908,19 +973,11 @@ def _stats_html(
     model's elapsed time so far, and accuracy waits as "…". Once the run is
     over, the tiles show the final figures ("—" for a model with none).
 
-    The latency tile of the fastest model that has finished is green. While
-    running, only the models named in `finished` are in contention, so the
-    tile turns green the moment the first model is done, without waiting for
-    the others. A model named in `sits_out` isn't run: its tiles are greyed
-    out and read N/A.
+    The latency tile of the winner (see `_winner`) is green. A model named in
+    `sits_out` isn't run: its tiles are greyed out and read N/A.
     """
     blank = "…" if running else "—"
-    done = [
-        (ms, name)
-        for name, ms, _ in results
-        if ms is not None and name not in sits_out and (name in finished or not running)
-    ]
-    winner = min(done)[1] if done else None
+    winner = _winner(results, running, sits_out, finished)
 
     def tile(name: str, value: str, label: str, extra: str = "") -> str:
         out = name in sits_out
@@ -942,9 +999,9 @@ def _stats_html(
         for name, ms, _ in results
     ]
     accuracy = [
-        tile(name, blank, f"{name} · accuracy")
+        tile(name, blank, f"{name} · Noul accuracy")
         if acc is None
-        else tile(name, f"{acc[0] / acc[1]:.0%}", f"{name} · accuracy · {acc[0]}/{acc[1]} correct")
+        else tile(name, f"{acc[0] / acc[1]:.0%}", f"{name} · Noul accuracy · {acc[0]}/{acc[1]} Nouls correct")
         for name, _, acc in results
     ]
     return (
@@ -956,12 +1013,15 @@ def _stats_html(
 PROGRESS_TITLES = {TODO: "not started", RUNNING: "in progress", DONE: "complete"}
 
 
-def _progress_html(rows: list[tuple[str, list[str]]], sits_out: tuple[str, ...] = ()) -> str:
+def _progress_html(
+    rows: list[tuple[str, list[str]]], sits_out: tuple[str, ...] = (), winner: str | None = None
+) -> str:
     """The progress strip under the tiles: a row per model, a column per question.
 
     `rows` is one (name, states) per model, a state per question. A cell is
-    yellow while its question is in progress and blue once it's complete. A
-    model named in `sits_out` isn't run: its row is grey throughout.
+    yellow while its question is in progress and blue once it's complete. The
+    `winner`'s row is green instead of blue. A model named in `sits_out`
+    isn't run: its row is grey throughout.
     """
     n = len(rows[0][1]) if rows else 0
     if not n:
@@ -969,15 +1029,29 @@ def _progress_html(rows: list[tuple[str, list[str]]], sits_out: tuple[str, ...] 
     cells = ["<div></div>"] + [f'<div class="progress-num">{i}</div>' for i in range(1, n + 1)]
     for name, states in rows:
         out = name in sits_out
+        won = " winner" if name == winner else ""
         cells.append(f'<div class="progress-name{" sits-out" if out else ""}">{name}</div>')
         cells += [
-            f'<div class="progress-cell {"sits-out" if out else s}" '
+            f'<div class="progress-cell {"sits-out" if out else s + won}" '
             f'title="{name} · question {i}: {"not run" if out else PROGRESS_TITLES[s]}"></div>'
             for i, s in enumerate(states, 1)
         ]
     return (
         f'<div class="progress-grid" style="grid-template-columns: max-content repeat({n}, minmax(0, 1fr))">'
         f'{"".join(cells)}</div>'
+    )
+
+
+def _board_html(
+    rows: list[tuple[str, list[str]]],
+    results: list[tuple[str, float | None, tuple[int, int] | None]],
+    running: bool = False,
+    sits_out: tuple[str, ...] = (),
+    finished: tuple[str, ...] = (),
+) -> str:
+    """The tiles with the progress strip under them. Arguments as `_stats_html`."""
+    return _stats_html(results, running, sits_out, finished) + _progress_html(
+        rows, sits_out, _winner(results, running, sits_out, finished)
     )
 
 
@@ -1070,7 +1144,8 @@ def race(context: str, questions_text: str):
     button is clicked. While the models run, the latency tiles are stopwatches;
     when all three are back, the tiles show the final figures and the fastest
     model's latency tile turns green. Under the tiles, the progress strip
-    shows each model's questions turning yellow, then blue. Outputs, in order:
+    shows each model's questions turning yellow, then blue; the row of the
+    first model to finish turns green. Outputs, in order:
     tiles and progress strip, table, Granite timing, Jev timing, Luna timing,
     endpoint status.
     """
@@ -1083,16 +1158,14 @@ def race(context: str, questions_text: str):
     clocks: dict[str, dict] = {name: {} for name in MODEL_NAMES}
     granite_progress = [TODO] * n
 
-    def progress(jev_ok: bool = True, luna_ok: bool = True) -> str:
-        return _progress_html(
-            [
-                ("Granite Switch", granite_progress),
-                ("Jev", _batch_progress(clocks["Jev"], n, jev_ok)),
-                ("GPT Luna", _batch_progress(clocks["GPT Luna"], n, luna_ok)),
-            ]
-        )
+    def progress(jev_ok: bool = True, luna_ok: bool = True) -> list[tuple[str, list[str]]]:
+        return [
+            ("Granite Switch", granite_progress),
+            ("Jev", _batch_progress(clocks["Jev"], n, jev_ok)),
+            ("GPT Luna", _batch_progress(clocks["GPT Luna"], n, luna_ok)),
+        ]
 
-    yield _stats_html(EMPTY_RESULTS, running=True) + progress(), None, "", "", "", gr.skip()
+    yield _board_html(progress(), EMPTY_RESULTS, running=True), None, "", "", "", gr.skip()
 
     def granite_run():
         # Granite's stopwatch starts once the endpoint is awake.
@@ -1109,7 +1182,7 @@ def race(context: str, questions_text: str):
         while not all(run.done() for run in runs):
             time.sleep(STOPWATCH_TICK_S)
             yield (
-                _stats_html(**_stopwatches(clocks)) + progress(),
+                _board_html(progress(), **_stopwatches(clocks)),
                 gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
             )
         wake_s, (granite, g_time) = granite_future.result()
@@ -1139,13 +1212,14 @@ def race(context: str, questions_text: str):
             "\n\n**Not scored:** none of the questions has an answer. Put Yes or No "
             "after each question mark to score the models."
         )
-    stats = _stats_html(
+    stats = _board_html(
+        progress(jev_ok=jev is not None, luna_ok=luna is not None),
         [
             ("Granite Switch", g_time["total_s"] * 1000, _accuracy(granite_nouls_, expected)),
             ("Jev", jev_s * 1000 if jev is not None else None, _accuracy(jev, expected)),
             ("GPT Luna", luna_s * 1000 if luna is not None else None, _accuracy(luna, expected)),
-        ]
-    ) + progress(jev_ok=jev is not None, luna_ok=luna is not None)
+        ],
+    )
     yield (
         stats, table, timing,
         _reference_timing_md("Jev", jev, jev_s, jev_status),
@@ -1204,18 +1278,15 @@ def obstacle_course(context: str, questions_text: str):
         )
         return granite_results, frame.style.set_properties(subset=["Jev"], color=GREY)
 
-    def progress() -> str:
-        return _progress_html(
-            [
-                ("Granite Switch", _course_progress(granite, g_time)),
-                ("Jev", [TODO] * len(questions)),
-                ("GPT Luna", _course_progress(luna, luna_time)),
-            ],
-            sits_out,
-        )
+    def progress() -> list[tuple[str, list[str]]]:
+        return [
+            ("Granite Switch", _course_progress(granite, g_time)),
+            ("Jev", [TODO] * len(questions)),
+            ("GPT Luna", _course_progress(luna, luna_time)),
+        ]
 
     yield (
-        _stats_html(EMPTY_RESULTS, running=True, sits_out=sits_out) + progress(),
+        _board_html(progress(), EMPTY_RESULTS, running=True, sits_out=sits_out),
         table()[1], "", "", "", gr.skip(),
     )
 
@@ -1230,7 +1301,7 @@ def obstacle_course(context: str, questions_text: str):
             time.sleep(STOPWATCH_TICK_S)
             arrived = sum(r is not PENDING for r in granite + luna)
             yield (
-                _stats_html(**_stopwatches(clocks), sits_out=sits_out) + progress(),
+                _board_html(progress(), **_stopwatches(clocks), sits_out=sits_out),
                 table()[1] if arrived != shown else gr.skip(),
                 gr.skip(), gr.skip(), gr.skip(), gr.skip(),
             )
@@ -1259,21 +1330,23 @@ def obstacle_course(context: str, questions_text: str):
     if luna_ok:
         luna_status = (
             f"one at a time: {n - n_free} yes/no via the Decisions API (`{LUNA_MODEL}`), "
-            f"{n_free} freeform via chat completions (`{LUNA_CHAT_MODEL}`, reasoning off)"
+            f"{n_free} freeform via chat completions (`{LUNA_CHAT_MODEL}`, reasoning off) · "
+            f"{_reuse(*_total_usage(luna_time['usage']))}"
         )
         if luna_time["errors"]:
             luna_status += f" · {len(luna_time['errors'])} call(s) failed, first: {luna_time['errors'][0]}"
         luna_md = f"**GPT Luna:** {luna_time['total_s'] * 1000:.0f} ms end to end · {luna_status}"
     else:
         luna_md = f"**GPT Luna:** unavailable · {luna_time['unavailable']}"
-    stats = _stats_html(
+    stats = _board_html(
+        progress(),
         [
             ("Granite Switch", g_time["total_s"] * 1000, _accuracy(granite_results, expected)),
             ("Jev", None, None),
             ("GPT Luna", luna_time["total_s"] * 1000 if luna_ok else None, _accuracy(luna, expected) if luna_ok else None),
         ],
         sits_out=sits_out,
-    ) + progress()
+    )
     yield (
         stats,
         styled,
@@ -1315,6 +1388,9 @@ CSS = """
 }
 .progress-cell.running { background: #facc15; border-color: #ca8a04; }
 .progress-cell.done { background: #3b82f6; border-color: #1d4ed8; }
+/* The row of the fastest model to finish: the same green as its latency tile's border. */
+.progress-cell.done.winner { background: #2e9e5b; border-color: #23804a; }
+.dark .progress-cell.done.winner { background: #3fb872; border-color: #2e9e5b; }
 /* A model that isn't run: the same grey as its table column. */
 .progress-cell.sits-out { background: #9ca3af; border-color: #9ca3af; }
 .progress-name.sits-out { color: #9ca3af; }
@@ -1395,6 +1471,9 @@ with gr.Blocks(title="Noul Race") as demo:
         "**Granite noul:** the uncertainty adapter scores ten bins (0.05, 0.15, … 0.95), "
         "and the certainty is the probability-weighted average of those bins, so the "
         "Granite noul always falls between 0.05 and 0.95.\n\n"
+        "**Cache reuse:** each timing line under the table reports how many prompt tokens "
+        "that model's API says it read from cache, even when that's 0, or that the API "
+        "doesn't report it.\n\n"
         f"**Hardware:** Granite Switch is served by vLLM on {GRANITE_HARDWARE}, on a "
         "Hugging Face Inference Endpoint. All times are full round trips. The "
         "endpoint scales to zero after 15 idle minutes; opening this page starts "

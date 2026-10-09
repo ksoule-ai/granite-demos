@@ -358,11 +358,13 @@ OpenAI's GPT Luna (`gpt-6-luna`, through the Decisions API).
   order, run one at a time. Yes/no questions go to each model's System One call;
   freeform questions go to a chat completion capped at 20 tokens. Jev returns decisions
   only, so it isn't run and shows greyed out.
-- **Metrics.** Each model has a latency tile that runs as a stopwatch, with an accuracy
+- **Metrics.** Each model has a latency tile that runs as a stopwatch, with a Noul accuracy
   tile beneath it. The first model to finish gets a green latency tile. Under the tiles,
   a progress strip has a row per model and a column per question: a cell is yellow while
-  its question is in progress and blue once it's complete. Jev's row stays grey on the
-  Obstacle Course.
+  its question is in progress and blue once it's complete, and the row of the first model
+  to finish turns green. Jev's row stays grey on the Obstacle Course. Each model's timing line
+  under the table reports how many prompt tokens its API read from cache, even when
+  that's 0.
 
 Deploy it with [`scripts/create_noul_race_space.py`](scripts/create_noul_race_space.py),
 which creates the Space (private unless `--public` is passed), sets its secrets from
