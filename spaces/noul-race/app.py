@@ -785,7 +785,9 @@ def generate_questions(prompt: str):
 
 GENERATE_LABEL = "Generate questions"
 RANDOM_LABEL = "🎲 Random Wikipedia article"
-MODEL_NAMES = ["Granite Switch", "Jev", "GPT Luna"]
+# The order of the tiles, the progress rows and the table columns. Jev is
+# always last, however many models race.
+MODEL_NAMES = ["Granite Switch", "GPT Luna", "Jev"]
 EMPTY_RESULTS = [(name, None, None) for name in MODEL_NAMES]
 GREY = "#9ca3af"  # the Jev column on the Obstacle Course, where Jev isn't run
 
@@ -801,7 +803,7 @@ PAGES = {
             "A noul above 0.5 counts as a yes, and ✓ / ✗ marks it against the answer "
             "on the question's line. Granite noul: c('yes'), the UQ aLoRA's certainty in a prefilled 'Yes'."
         ),
-        "table_headers": ["Question", "Answer", "Granite noul", "Jev noul", "Luna noul"],
+        "table_headers": ["Question", "Answer", "Granite noul", "Luna noul", "Jev noul"],
         "column_widths": ["43%", "9%", "16%", "16%", "16%"],
         "questions_label": (
             f"Yes/no questions, one per line (up to {MAX_QUESTIONS}), each "
@@ -827,8 +829,8 @@ PAGES = {
             "time, in order, and the table fills in as answers come back. Jev returns "
             "decisions only and can't take freeform questions, so it isn't run here."
         ),
-        "table_headers": ["Question", "Answer", "Granite Switch", "Jev", "GPT Luna"],
-        "column_widths": ["26%", "10%", "28%", "8%", "28%"],
+        "table_headers": ["Question", "Answer", "Granite Switch", "GPT Luna", "Jev"],
+        "column_widths": ["26%", "10%", "28%", "28%", "8%"],
         "questions_label": (
             f"Questions, one per line (up to {MAX_QUESTIONS}). Yes/no: “…? Yes” or "
             "“…? No”. Open-ended: “…? Freeform”"
@@ -1161,8 +1163,8 @@ def race(context: str, questions_text: str):
     def progress(jev_ok: bool = True, luna_ok: bool = True) -> list[tuple[str, list[str]]]:
         return [
             ("Granite Switch", granite_progress),
-            ("Jev", _batch_progress(clocks["Jev"], n, jev_ok)),
             ("GPT Luna", _batch_progress(clocks["GPT Luna"], n, luna_ok)),
+            ("Jev", _batch_progress(clocks["Jev"], n, jev_ok)),
         ]
 
     yield _board_html(progress(), EMPTY_RESULTS, running=True), None, "", "", "", gr.skip()
@@ -1195,11 +1197,11 @@ def race(context: str, questions_text: str):
             "Question": questions,
             "Answer": [_answer_cell(e) for e in expected],
             "Granite noul": [_noul_cell(n, e) for n, e in zip(granite_nouls_, expected)],
-            "Jev noul": [
-                _noul_cell(None if jev is None else jev[i], e) for i, e in enumerate(expected)
-            ],
             "Luna noul": [
                 _noul_cell(None if luna is None else luna[i], e) for i, e in enumerate(expected)
+            ],
+            "Jev noul": [
+                _noul_cell(None if jev is None else jev[i], e) for i, e in enumerate(expected)
             ],
         }
     )
@@ -1216,8 +1218,8 @@ def race(context: str, questions_text: str):
         progress(jev_ok=jev is not None, luna_ok=luna is not None),
         [
             ("Granite Switch", g_time["total_s"] * 1000, _accuracy(granite_nouls_, expected)),
-            ("Jev", jev_s * 1000 if jev is not None else None, _accuracy(jev, expected)),
             ("GPT Luna", luna_s * 1000 if luna is not None else None, _accuracy(luna, expected)),
+            ("Jev", jev_s * 1000 if jev is not None else None, _accuracy(jev, expected)),
         ],
     )
     yield (
@@ -1272,8 +1274,8 @@ def obstacle_course(context: str, questions_text: str):
                 "Granite Switch": [
                     _course_cell(r, e, f) for r, e, f in zip(granite_results, expected, freeform)
                 ],
-                "Jev": ["N/A"] * len(questions),
                 "GPT Luna": [_course_cell(r, e, f) for r, e, f in zip(luna, expected, freeform)],
+                "Jev": ["N/A"] * len(questions),
             }
         )
         return granite_results, frame.style.set_properties(subset=["Jev"], color=GREY)
@@ -1281,8 +1283,8 @@ def obstacle_course(context: str, questions_text: str):
     def progress() -> list[tuple[str, list[str]]]:
         return [
             ("Granite Switch", _course_progress(granite, g_time)),
-            ("Jev", [TODO] * len(questions)),
             ("GPT Luna", _course_progress(luna, luna_time)),
+            ("Jev", [TODO] * len(questions)),
         ]
 
     yield (
@@ -1342,8 +1344,8 @@ def obstacle_course(context: str, questions_text: str):
         progress(),
         [
             ("Granite Switch", g_time["total_s"] * 1000, _accuracy(granite_results, expected)),
-            ("Jev", None, None),
             ("GPT Luna", luna_time["total_s"] * 1000 if luna_ok else None, _accuracy(luna, expected) if luna_ok else None),
+            ("Jev", None, None),
         ],
         sits_out=sits_out,
     )
@@ -1435,8 +1437,8 @@ def build_page(kind: str, endpoint_status: gr.Markdown) -> None:
                 wrap=True,
             )
             timing = gr.Markdown()
-            jev_timing = gr.Markdown()
             luna_timing = gr.Markdown()
+            jev_timing = gr.Markdown()
     # A new article makes the old questions stale, so clear them.
     random_button.click(
         random_article, outputs=[state, random_status], api_name=f"{prefix}random_article"
