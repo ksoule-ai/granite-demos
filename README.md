@@ -37,7 +37,7 @@ preview checkpoints and their embedded adapters. There are five, in two groups.
 | Demo | What it shows | Where it lives |
 |---|---|---|
 | [Thinking Fast and Slow with Granite](spaces/jev-noul-mimic/README.md) | One 3B model doing two kinds of thinking next to TypeSafe AI's Jev. **Thinking Fast** answers yes/no questions with a *noul* (the probability the answer is yes) read from Granite's one-token answer. **Thinking Slow** writes an answer, then scores its own certainty with the uncertainty (UQ) adapter through Mellea. | [`spaces/jev-noul-mimic/`](spaces/jev-noul-mimic/) |
-| [Noul Race](spaces/noul-race/README.md) | Races Granite Switch against Jev and OpenAI's GPT Luna on the same context and questions, with live stopwatches and accuracy against an answer key. A **Race** tab runs yes/no questions in parallel; an **Obstacle Course** tab mixes yes/no and freeform questions, one at a time. | [`spaces/noul-race/`](spaces/noul-race/), [`scripts/create_noul_race_space.py`](scripts/create_noul_race_space.py) |
+| [Noul Race](spaces/noul-race/README.md) | Races Granite Switch against Jev and OpenAI's GPT Luna on the same context and questions, with live stopwatches and accuracy against an answer key. An **Obstacle Course** tab mixes yes/no and freeform questions, one at a time; a **Race** tab runs yes/no questions in parallel. | [`spaces/noul-race/`](spaces/noul-race/), [`scripts/create_noul_race_space.py`](scripts/create_noul_race_space.py) |
 | [ZeroGPU smoke test](spaces/zerogpu-smoke/README.md) | A one-button Space that grabs a ZeroGPU slot and reports the device, VRAM and CUDA version. Used to check ZeroGPU allocation before deploying Activity 2. It doesn't call the endpoint. | [`spaces/zerogpu-smoke/`](spaces/zerogpu-smoke/), [`scripts/create_smoke_space.py`](scripts/create_smoke_space.py) |
 
 Activities 1 and 2 use the same architecture; they differ in **serving model** (persistent
@@ -352,7 +352,7 @@ OpenAI's GPT Luna (`gpt-6-luna`, through the Decisions API).
 - **Questions.** One per line with the answer after the question mark (`…? Yes`,
   `…? No`). Write them yourself or click **Generate questions**, which streams them in
   from `openai/gpt-oss-120b` on OpenRouter.
-- **Race tab.** 50 generated yes/no questions go to all three models at once. Granite's
+- **Race tab.** 10 generated yes/no questions go to all three models at once. Granite's
   noul here is c(yes): the UQ adapter's certainty in a prefilled "Yes".
 - **Obstacle Course tab.** 10 yes/no and 5 freeform (`…? Freeform`) questions in random
   order, run one at a time. Yes/no questions go to each model's System One call;

@@ -15,7 +15,7 @@ The flow
    button.
 2. The questions box holds one yes/no question per line, each followed by its
    answer: "...? Yes" or "...? No". The user writes them, or "Generate
-   questions" asks gpt-oss-120b, on OpenRouter, for 50 of them.
+   questions" asks gpt-oss-120b, on OpenRouter, for 10 of them.
 3. "Race the Models" sends the context and questions to all three models.
 4. Each noul above 0.5 counts as a yes and is scored against the answer on
    its line. A question with no answer still gets nouls but isn't scored.
@@ -121,11 +121,11 @@ WIKIPEDIA_USER_AGENT = "NoulRace/1.0 (Hugging Face Space demo; https://huggingfa
 # The questions and their answer key are written by gpt-oss-120b, reached
 # through OpenRouter's chat completions API.
 QUESTION_MODEL = os.environ.get("QUESTION_MODEL", "openai/gpt-oss-120b")
-NUM_QUESTIONS = 50
+NUM_QUESTIONS = 10
 # The Obstacle Course's generated mix.
 OBSTACLE_YES_NO = 10
 OBSTACLE_FREEFORM = 5
-# 50 short lines are about 1k tokens; the rest is headroom for a model that
+# 15 short lines are about 300 tokens; the rest is headroom for a model that
 # reasons before it answers.
 GENERATION_MAX_TOKENS = 8192
 # Sent to OpenRouter with the request, to keep generation quick: route to the
@@ -1276,8 +1276,9 @@ with gr.Blocks(title="Noul Race") as demo:
     # One endpoint status line under the tabs, shared by both.
     endpoint_status = gr.Markdown(warmer.status(), render=False)
     with gr.Tabs():
-        for kind, page in PAGES.items():
-            with gr.Tab(page["tab"]):
+        # The Obstacle Course is the first tab, so it's the one the page opens on.
+        for kind in ("obstacle", "race"):
+            with gr.Tab(PAGES[kind]["tab"]):
                 build_page(kind, endpoint_status)
     endpoint_status.render()
     gr.Markdown(

@@ -29,9 +29,9 @@ Noul Race puts one open 3B model, Granite Switch, next to Jev (via
 [OpenRouter](https://openrouter.ai/typesafe)) and GPT Luna on the same context
 and the same questions, and scores all three against an answer key.
 
-The page has two tabs. **Race** is all yes/no questions across all three
-models. **Obstacle Course** mixes yes/no and open-ended questions, and runs
-Granite Switch and GPT Luna only.
+The page has two tabs. **Obstacle Course**, the one it opens on, mixes yes/no
+and open-ended questions, and runs Granite Switch and GPT Luna only. **Race**
+is all yes/no questions across all three models.
 
 ## The flow (Race)
 
@@ -45,7 +45,7 @@ Granite Switch and GPT Luna only.
    yourself, or click **Generate questions** and OpenAI's open-weight
    gpt-oss-120b, on OpenRouter
    ([`openai/gpt-oss-120b`](https://openrouter.ai/openai/gpt-oss-120b)),
-   writes 50 from the context. The answers are right there in the box, so
+   writes 10 from the context. The answers are right there in the box, so
    they can be checked and edited before the race.
 3. **Race the Models.** The context and questions go to Granite Switch, Jev
    and GPT Luna at the same time.
@@ -66,7 +66,7 @@ Hugging Face Inference Endpoint.
 
 ## Obstacle Course
 
-The second tab is the same page with a mix of question types, to show a model
+This tab is the same page as Race with a mix of question types, to show a model
 that has to switch between a System One call and a written answer.
 
 - **Questions.** A line ending `…? Yes` or `…? No` is a yes/no question. A line
@@ -119,7 +119,7 @@ context.
 
 The Space sends one chat request to OpenRouter's chat completions API, using
 the OpenAI client and the model `openai/gpt-oss-120b`. The prompt asks
-for exactly 50 lines, each a question, then a space, then `Yes` or `No`, with
+for exactly 10 lines, each a question, then a space, then `Yes` or `No`, with
 about half of each answer, every question answerable from the document alone.
 
 Three things keep it quick:
@@ -133,7 +133,7 @@ Three things keep it quick:
   as soon as its line is complete.
 
 The reply is parsed line by line; numbering, bullets and repeated questions are
-dropped, so a run can end up with fewer than 50. The status line under the
+dropped, so a run can end up with fewer than 10. The status line under the
 button says how many questions were produced and how long it took. On the
 Obstacle Course, the questions stream in the order the model writes them and
 are shuffled once they're all in.
