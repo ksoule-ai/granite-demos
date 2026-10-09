@@ -59,6 +59,12 @@ stopwatch stops when its answers are back. The latency tile of the first model
 to finish turns green straight away, without waiting for the others. Both tabs
 work this way.
 
+Under the tiles, a **progress strip** shows the race as it happens: a row per
+model and a column per question. A cell turns yellow while its question is in
+progress and blue once it's complete. On this tab Jev and Luna take all the
+questions in one request, so their rows change together; Granite's first
+question runs alone, then the rest together.
+
 A question with no answer after it still gets nouls but isn't scored.
 
 Granite Switch is served by vLLM on **a single NVIDIA L4 GPU (24 GB)**, on a
@@ -80,7 +86,8 @@ that has to switch between a System One call and a written answer.
   OpenAI's chat completions API for Luna, with `reasoning_effort` set to
   `none` (Luna's default is `medium`; Granite's base model doesn't reason).
 - **Jev isn't run.** It returns decisions only and can't take freeform
-  questions. It stays in the tiles and the table, greyed out and marked N/A.
+  questions. It stays in the tiles and the table, greyed out and marked N/A,
+  and its row on the progress strip stays grey.
 - **Scoring.** Accuracy counts the yes/no questions only. Written answers are
   shown in the table and aren't graded.
 
@@ -89,7 +96,8 @@ question isn't sent until the answer to the one before it has come back. So
 every question is its own request: an adapter call or a chat completion for
 Granite, and a Decisions request or a chat completion for Luna. The two models
 run side by side, and each one's latency is the time its own run took. The
-table fills in as answers arrive; the latency and accuracy tiles are worked out
+table fills in as answers arrive, and the progress strip moves one cell at a
+time along each model's row; the latency and accuracy tiles are worked out
 at the end. On Granite, every request after the first still reuses the cached
 context.
 

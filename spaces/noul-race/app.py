@@ -154,6 +154,7 @@ FREEFORM_INSTRUCTION = "Answer in a few words."
 FREEFORM_MAX_TOKENS = 20
 FREEFORM = "freeform"  # a question's answer when it's open-ended
 PENDING = "…"  # an Obstacle Course result that hasn't come back yet
+TODO, RUNNING, DONE = "todo", "running", "done"  # a question's state on the progress strip
 
 
 def _question_prompt(state: str, question: str) -> str:
@@ -459,9 +460,26 @@ def _prime_then_fan_out(jobs: list) -> tuple[list, dict]:
     return [first, *rest], {"prime_s": t1 - t0, "fanout_s": t2 - t1, "total_s": t2 - t0}
 
 
-def granite_nouls(state: str, questions: list[str]) -> tuple[list[Certainty], dict]:
-    """Every question as a noul: one adapter call each, primed then fanned out."""
-    return _prime_then_fan_out([partial(granite_noul, state, q) for q in questions])
+def _tracked(progress: list[str], i: int, job):
+    """Run `job`, marking question `i` in `progress` as running, then done."""
+    progress[i] = RUNNING
+    result = job()
+    progress[i] = DONE
+    return result
+
+
+def granite_nouls(
+    state: str, questions: list[str], progress: list[str] | None = None
+) -> tuple[list[Certainty], dict]:
+    """Every question as a noul: one adapter call each, primed then fanned out.
+
+    Each question's state is written into `progress` as it changes, so the
+    page can show it.
+    """
+    jobs = [partial(granite_noul, state, q) for q in questions]
+    if progress is not None:
+        jobs = [partial(_tracked, progress, i, job) for i, job in enumerate(jobs)]
+    return _prime_then_fan_out(jobs)
 
 
 def granite_course(state: str, questions: list[str], freeform: list[bool], results: list, timing: dict) -> None:
@@ -935,6 +953,55 @@ def _stats_html(
     )
 
 
+PROGRESS_TITLES = {TODO: "not started", RUNNING: "in progress", DONE: "complete"}
+
+
+def _progress_html(rows: list[tuple[str, list[str]]], sits_out: tuple[str, ...] = ()) -> str:
+    """The progress strip under the tiles: a row per model, a column per question.
+
+    `rows` is one (name, states) per model, a state per question. A cell is
+    yellow while its question is in progress and blue once it's complete. A
+    model named in `sits_out` isn't run: its row is grey throughout.
+    """
+    n = len(rows[0][1]) if rows else 0
+    if not n:
+        return ""
+    cells = ["<div></div>"] + [f'<div class="progress-num">{i}</div>' for i in range(1, n + 1)]
+    for name, states in rows:
+        out = name in sits_out
+        cells.append(f'<div class="progress-name{" sits-out" if out else ""}">{name}</div>')
+        cells += [
+            f'<div class="progress-cell {"sits-out" if out else s}" '
+            f'title="{name} · question {i}: {"not run" if out else PROGRESS_TITLES[s]}"></div>'
+            for i, s in enumerate(states, 1)
+        ]
+    return (
+        f'<div class="progress-grid" style="grid-template-columns: max-content repeat({n}, minmax(0, 1fr))">'
+        f'{"".join(cells)}</div>'
+    )
+
+
+def _batch_progress(clock: dict, n: int, ok: bool = True) -> list[str]:
+    """Progress of a model that takes all `n` questions in one request.
+
+    Every question is in progress from the moment the request is sent until
+    it comes back. `ok` is False for a request that failed.
+    """
+    if not ok or "start" not in clock:
+        return [TODO] * n
+    return [DONE if "total_s" in clock else RUNNING] * n
+
+
+def _course_progress(results: list, clock: dict) -> list[str]:
+    """Progress of a model that takes the questions one at a time, in order."""
+    if "start" not in clock:
+        return [TODO] * len(results)
+    states = [TODO if r is PENDING else DONE for r in results]
+    if "total_s" not in clock and TODO in states:
+        states[states.index(TODO)] = RUNNING
+    return states
+
+
 def _stopwatches(clocks: dict[str, dict]) -> dict:
     """Arguments for `_stats_html` while the models run: readings and who's done.
 
@@ -1002,22 +1069,35 @@ def race(context: str, questions_text: str):
     The first update clears the last run, so the page responds the moment the
     button is clicked. While the models run, the latency tiles are stopwatches;
     when all three are back, the tiles show the final figures and the fastest
-    model's latency tile turns green. Outputs, in order: tiles, table, Granite
-    timing, Jev timing, Luna timing, endpoint status.
+    model's latency tile turns green. Under the tiles, the progress strip
+    shows each model's questions turning yellow, then blue. Outputs, in order:
+    tiles and progress strip, table, Granite timing, Jev timing, Luna timing,
+    endpoint status.
     """
     if not context.strip():
         raise gr.Error("Enter some context for the models to decide about.")
     questions, answers = _parse_questions(questions_text)
     # Every question is a yes/no question here; a Freeform marker just leaves it unscored.
     expected = [a if isinstance(a, bool) else None for a in answers]
-    yield _stats_html(EMPTY_RESULTS, running=True), None, "", "", "", gr.skip()
-
+    n = len(questions)
     clocks: dict[str, dict] = {name: {} for name in MODEL_NAMES}
+    granite_progress = [TODO] * n
+
+    def progress(jev_ok: bool = True, luna_ok: bool = True) -> str:
+        return _progress_html(
+            [
+                ("Granite Switch", granite_progress),
+                ("Jev", _batch_progress(clocks["Jev"], n, jev_ok)),
+                ("GPT Luna", _batch_progress(clocks["GPT Luna"], n, luna_ok)),
+            ]
+        )
+
+    yield _stats_html(EMPTY_RESULTS, running=True) + progress(), None, "", "", "", gr.skip()
 
     def granite_run():
         # Granite's stopwatch starts once the endpoint is awake.
         waited = warmer.wait_ready()
-        result = _clocked(clocks["Granite Switch"], granite_nouls, context, questions)
+        result = _clocked(clocks["Granite Switch"], granite_nouls, context, questions, granite_progress)
         warmer.touch()
         return waited, result
 
@@ -1029,7 +1109,7 @@ def race(context: str, questions_text: str):
         while not all(run.done() for run in runs):
             time.sleep(STOPWATCH_TICK_S)
             yield (
-                _stats_html(**_stopwatches(clocks)),
+                _stats_html(**_stopwatches(clocks)) + progress(),
                 gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
             )
         wake_s, (granite, g_time) = granite_future.result()
@@ -1065,7 +1145,7 @@ def race(context: str, questions_text: str):
             ("Jev", jev_s * 1000 if jev is not None else None, _accuracy(jev, expected)),
             ("GPT Luna", luna_s * 1000 if luna is not None else None, _accuracy(luna, expected)),
         ]
-    )
+    ) + progress(jev_ok=jev is not None, luna_ok=luna is not None)
     yield (
         stats, table, timing,
         _reference_timing_md("Jev", jev, jev_s, jev_status),
@@ -1093,8 +1173,8 @@ def obstacle_course(context: str, questions_text: str):
     the table fills in as answers arrive. Once both have finished, the tiles
     show the final figures, the faster model's latency tile turns green, and
     the timing lines are filled in. Jev can't
-    take freeform questions, so it isn't run: its tiles and column are greyed
-    out. Same outputs as `race`.
+    take freeform questions, so it isn't run: its tiles, its column and its
+    row on the progress strip are greyed out. Same outputs as `race`.
     """
     sits_out = PAGES["obstacle"]["sits_out"]
     if not context.strip():
@@ -1124,7 +1204,20 @@ def obstacle_course(context: str, questions_text: str):
         )
         return granite_results, frame.style.set_properties(subset=["Jev"], color=GREY)
 
-    yield _stats_html(EMPTY_RESULTS, running=True, sits_out=sits_out), table()[1], "", "", "", gr.skip()
+    def progress() -> str:
+        return _progress_html(
+            [
+                ("Granite Switch", _course_progress(granite, g_time)),
+                ("Jev", [TODO] * len(questions)),
+                ("GPT Luna", _course_progress(luna, luna_time)),
+            ],
+            sits_out,
+        )
+
+    yield (
+        _stats_html(EMPTY_RESULTS, running=True, sits_out=sits_out) + progress(),
+        table()[1], "", "", "", gr.skip(),
+    )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         runs = [
@@ -1137,7 +1230,7 @@ def obstacle_course(context: str, questions_text: str):
             time.sleep(STOPWATCH_TICK_S)
             arrived = sum(r is not PENDING for r in granite + luna)
             yield (
-                _stats_html(**_stopwatches(clocks), sits_out=sits_out),
+                _stats_html(**_stopwatches(clocks), sits_out=sits_out) + progress(),
                 table()[1] if arrived != shown else gr.skip(),
                 gr.skip(), gr.skip(), gr.skip(), gr.skip(),
             )
@@ -1180,7 +1273,7 @@ def obstacle_course(context: str, questions_text: str):
             ("GPT Luna", luna_time["total_s"] * 1000 if luna_ok else None, _accuracy(luna, expected) if luna_ok else None),
         ],
         sits_out=sits_out,
-    )
+    ) + progress()
     yield (
         stats,
         styled,
@@ -1212,6 +1305,19 @@ CSS = """
 .dark .e2e-tile.winner { background: #17512e; border-color: #3fb872; }
 .e2e-value { font-size: 2.4rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .e2e-label { font-size: 0.9rem; margin-top: 2px; }
+/* The progress strip: a row per model, a column per question. */
+.progress-grid { display: grid; gap: 3px; align-items: center; margin: var(--spacing-md) 0; font-size: 0.8rem; }
+.progress-name { padding-right: var(--spacing-md); white-space: nowrap; }
+.progress-num { text-align: center; overflow: hidden; opacity: 0.7; font-variant-numeric: tabular-nums; }
+.progress-cell {
+  height: 22px; border-radius: 4px; background: var(--background-fill-secondary);
+  border: 1px solid var(--border-color-primary);
+}
+.progress-cell.running { background: #facc15; border-color: #ca8a04; }
+.progress-cell.done { background: #3b82f6; border-color: #1d4ed8; }
+/* A model that isn't run: the same grey as its table column. */
+.progress-cell.sits-out { background: #9ca3af; border-color: #9ca3af; }
+.progress-name.sits-out { color: #9ca3af; }
 """
 
 
