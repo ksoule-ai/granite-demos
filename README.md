@@ -19,23 +19,31 @@ tags:
 
 # granite-switch demos
 
-Two ways to run IBM's [Granite Switch](https://github.com/generative-computing/granite-switch)
-preview checkpoint and exercise its embedded adapters:
+Demos built on IBM's [Granite Switch](https://github.com/generative-computing/granite-switch)
+preview checkpoints and their embedded adapters. There are five, in two groups.
 
-1. **[Activity 1 — HF Inference Endpoint with a custom vLLM container](#activity-1--granite-switch-on-a-hugging-face-inference-endpoint)**
-   hosts `granite-switch-4.1-3b-preview` behind an OpenAI-compatible API and calls
-   the **requirement-check** adapter from raw Python. Proven deployment recipe for a
-   preview architecture that stock vLLM can't load.
-2. **[Activity 2 — ZeroGPU Space demo on a HF Transformers backend](#activity-2--zerogpu-space-demo-mellea--hf-transformers-backend)**
-   drives `granite-switch-4.1-8b-preview` in-process on ZeroGPU through
-   [Mellea](https://docs.mellea.ai), with an instruct–validate–repair loop, token
-   streaming, and live KV-cache metrics. This is the app the Space frontmatter above
-   points at (`app.py`).
+## What's in this repo
 
-Both use the same architecture; they differ in **serving model** (persistent vLLM
-server vs. in-process Transformers) and therefore in what's easy: Activity 1 gives you
-a standing OpenAI endpoint other apps can call; Activity 2 fits a single-checkpoint
-demo onto free ZeroGPU hardware.
+**Serving Granite Switch** (documented in full below):
+
+| Demo | What it shows | Where it lives |
+|---|---|---|
+| [Activity 1: Inference Endpoint](#activity-1--granite-switch-on-a-hugging-face-inference-endpoint) | Hosts `granite-switch-4.1-3b-preview` on a Hugging Face Inference Endpoint with a custom vLLM container, behind an OpenAI-compatible API, and calls the **requirement-check** adapter from raw Python. A proven deployment recipe for a preview architecture that stock vLLM can't load. | [`Dockerfile`](Dockerfile), [`docker/`](docker/), [`requirement_check.py`](requirement_check.py), [`ENDPOINT.md`](ENDPOINT.md) |
+| [Activity 2: ZeroGPU Space](#activity-2--zerogpu-space-demo-mellea--hf-transformers-backend) | Drives `granite-switch-4.1-8b-preview` in-process on ZeroGPU through [Mellea](https://docs.mellea.ai), with an instruct–validate–repair loop, token streaming, and live KV-cache metrics. This is the app the Space frontmatter above points at. | [`app.py`](app.py), [`switch_backend.py`](switch_backend.py), [`tests/`](tests/) |
+
+**Hugging Face Spaces** (each has its own README; summarized in
+[Spaces](#spaces)):
+
+| Demo | What it shows | Where it lives |
+|---|---|---|
+| [Thinking Fast and Slow with Granite](spaces/jev-noul-mimic/README.md) | One 3B model doing two kinds of thinking next to TypeSafe AI's Jev. **Thinking Fast** answers yes/no questions with a *noul* (the probability the answer is yes) read from Granite's one-token answer. **Thinking Slow** writes an answer, then scores its own certainty with the uncertainty (UQ) adapter through Mellea. | [`spaces/jev-noul-mimic/`](spaces/jev-noul-mimic/) |
+| [Noul Race](spaces/noul-race/README.md) | Races Granite Switch against Jev and OpenAI's GPT Luna on the same context and questions, with live stopwatches and accuracy against an answer key. A **Race** tab runs yes/no questions in parallel; an **Obstacle Course** tab mixes yes/no and freeform questions, one at a time. | [`spaces/noul-race/`](spaces/noul-race/), [`scripts/create_noul_race_space.py`](scripts/create_noul_race_space.py) |
+| [ZeroGPU smoke test](spaces/zerogpu-smoke/README.md) | A one-button Space that grabs a ZeroGPU slot and reports the device, VRAM and CUDA version. Used to check ZeroGPU allocation before deploying Activity 2. It doesn't call the endpoint. | [`spaces/zerogpu-smoke/`](spaces/zerogpu-smoke/), [`scripts/create_smoke_space.py`](scripts/create_smoke_space.py) |
+
+Activities 1 and 2 use the same architecture; they differ in **serving model** (persistent
+vLLM server vs. in-process Transformers) and therefore in what's easy: Activity 1 gives you
+a standing OpenAI endpoint other apps can call, which is what the two noul Spaces do;
+Activity 2 fits a single-checkpoint demo onto free ZeroGPU hardware.
 
 ## Background: what Granite Switch is
 
@@ -304,3 +312,72 @@ generation quality — after deploying, send one message per adapter as a manual
   requirement. The pieces of the extra the HF backend actually needs at inference time
   (`llguidance`, `xgrammar`) are listed explicitly instead.
 - **Python 3.12** — ZeroGPU's builder maxes out at 3.12, and Mellea requires ≥3.11.
+
+---
+
+# Spaces
+
+Three smaller demos live under [`spaces/`](spaces/), each a self-contained Gradio Space
+folder with its own README, `app.py` and `requirements.txt`. The two noul demos call the
+Activity 1 endpoint, so they run on free CPU hardware; the GPU work happens on the
+endpoint.
+
+## Thinking Fast and Slow with Granite
+
+[`spaces/jev-noul-mimic/`](spaces/jev-noul-mimic/) · [README](spaces/jev-noul-mimic/README.md)
+
+*System One* models like TypeSafe AI's [Jev](https://docs.typesafe.ai) answer a yes/no
+question with a **noul**: one number in [0, 1], the probability that the answer is yes.
+This Space makes the same kind of call with Granite Switch and shows Jev alongside as a
+reference.
+
+- **Thinking Fast.** The prompt ends with "Reply with exactly one word, 'Yes' or 'No'.",
+  Granite generates one token, and the noul is P(yes) / (P(yes) + P(no)) from that
+  token's log-probabilities. On 82 hand-labeled questions this got 77 right (AUC 0.99),
+  against 74 for a ratio of two UQ-adapter scores and 52 for a single UQ score.
+- **Thinking Slow.** Granite writes an answer, then the UQ adapter (an aLoRA, so it
+  reuses the KV cache for the question and the answer) scores how likely that answer is
+  to be correct. Built with Mellea's `core.check_certainty`.
+- **Batching.** The shared state goes first in every prompt, one request primes vLLM's
+  prefix cache, and the rest fan out in parallel on the cached prefix.
+
+## Noul Race
+
+[`spaces/noul-race/`](spaces/noul-race/) · [README](spaces/noul-race/README.md)
+
+A fork of the demo above, turned into a three-way race between Granite Switch, Jev and
+OpenAI's GPT Luna (`gpt-6-luna`, through the Decisions API).
+
+- **Context.** Paste any text or JSON, or click **Random Wikipedia article**.
+- **Questions.** One per line with the answer after the question mark (`…? Yes`,
+  `…? No`). Write them yourself or click **Generate questions**, which streams them in
+  from `openai/gpt-oss-120b` on OpenRouter.
+- **Race tab.** 50 generated yes/no questions go to all three models at once. Granite's
+  noul here is c(yes): the UQ adapter's certainty in a prefilled "Yes".
+- **Obstacle Course tab.** 10 yes/no and 5 freeform (`…? Freeform`) questions in random
+  order, run one at a time. Yes/no questions go to each model's System One call;
+  freeform questions go to a chat completion capped at 20 tokens. Jev returns decisions
+  only, so it isn't run and shows greyed out.
+- **Metrics.** Each model has a latency tile that runs as a stopwatch, with an accuracy
+  tile beneath it. The first model to finish gets a green latency tile.
+
+Deploy it with [`scripts/create_noul_race_space.py`](scripts/create_noul_race_space.py),
+which creates the Space (private unless `--public` is passed), sets its secrets from
+`.env`, and uploads the folder:
+
+```bash
+pip install "huggingface_hub>=0.24" python-dotenv
+python scripts/create_noul_race_space.py
+```
+
+It needs `HF_TOKEN` and `HF_ENDPOINT_URL` in `.env`, plus `OPENROUTER_API_KEY` (Jev and
+question generation) and `OPENAI_API_KEY` (GPT Luna) for the full race.
+
+## ZeroGPU smoke test
+
+[`spaces/zerogpu-smoke/`](spaces/zerogpu-smoke/) · [README](spaces/zerogpu-smoke/README.md)
+
+One button: it grabs a ZeroGPU slot, reports the device name, VRAM and CUDA version, and
+times a matmul. Use it to confirm ZeroGPU allocation works on your account before
+deploying Activity 2. Create it with
+[`scripts/create_smoke_space.py`](scripts/create_smoke_space.py).
