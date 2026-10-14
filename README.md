@@ -20,7 +20,8 @@ tags:
 # granite-switch demos
 
 Demos built on IBM's [Granite Switch](https://github.com/generative-computing/granite-switch)
-preview checkpoints and their embedded adapters. There are five, in two groups.
+preview checkpoints and their embedded adapters, plus one speech demo with no Granite in it.
+There are six, in two groups.
 
 ## What's in this repo
 
@@ -38,6 +39,7 @@ preview checkpoints and their embedded adapters. There are five, in two groups.
 |---|---|---|
 | [Thinking Fast and Slow with Granite](spaces/jev-noul-mimic/README.md) | One 3B model doing two kinds of thinking next to TypeSafe AI's Jev. **Thinking Fast** answers yes/no questions with a *noul* (the probability the answer is yes) read from Granite's one-token answer. **Thinking Slow** writes an answer, then scores its own certainty with the uncertainty (UQ) adapter through Mellea. | [`spaces/jev-noul-mimic/`](spaces/jev-noul-mimic/) |
 | [Noul Race](spaces/noul-race/README.md) | Races Granite Switch against Jev and OpenAI's GPT Luna on the same context and questions, with live stopwatches and accuracy against an answer key. An **Obstacle Course** tab mixes yes/no and freeform questions, one at a time; a **Sprint** tab runs yes/no questions in parallel. | [`spaces/noul-race/`](spaces/noul-race/), [`scripts/create_noul_race_space.py`](scripts/create_noul_race_space.py) |
+| [Speech to Decisions](spaces/speech-to-decisions/README.md) | Speak into the microphone and models size up what you're saying while you say it. NVIDIA's Parakeet transcribes the speech. About once a second, gpt-oss-120b says what the speaker is doing in 1 to 5 words, and one Jev request screens the words for harmful content and answers a list of yes/no questions. All three models run on OpenRouter; there's no Granite in this one. | [`spaces/speech-to-decisions/`](spaces/speech-to-decisions/), [`scripts/create_speech_to_decisions_space.py`](scripts/create_speech_to_decisions_space.py) |
 | [ZeroGPU smoke test](spaces/zerogpu-smoke/README.md) | A one-button Space that grabs a ZeroGPU slot and reports the device, VRAM and CUDA version. Used to check ZeroGPU allocation before deploying Activity 2. It doesn't call the endpoint. | [`spaces/zerogpu-smoke/`](spaces/zerogpu-smoke/), [`scripts/create_smoke_space.py`](scripts/create_smoke_space.py) |
 
 Activities 1 and 2 use the same architecture; they differ in **serving model** (persistent
@@ -381,6 +383,42 @@ python scripts/create_noul_race_space.py
 
 It needs `HF_TOKEN` and `HF_ENDPOINT_URL` in `.env`, plus `OPENROUTER_API_KEY` (Jev and
 question generation) and `OPENAI_API_KEY` (GPT Luna) and `JEV9B_ENDPOINT_URL` (JEV-9B) for the full race.
+
+## Speech to Decisions
+
+[`spaces/speech-to-decisions/`](spaces/speech-to-decisions/) · [README](spaces/speech-to-decisions/README.md)
+
+A live speech demo with no Granite in it: NVIDIA's Parakeet
+(`nvidia/parakeet-tdt-0.6b-v3`), Jev (`jev-1.13`) and `openai/gpt-oss-120b`, all
+through OpenRouter.
+
+- **Speak.** The page posts the microphone audio to the Space every half second.
+- **Transcript.** Parakeet takes a whole clip per request, so the audio since the last
+  pause is sent again about once a second. That text is shown in grey until a pause
+  commits it.
+- **What's judged.** The last 25 words, so the board follows a change of subject. After
+  10 seconds of silence the board goes blank, and it fills in again from the words said
+  once the speaker resumes.
+- **The speaker is.** gpt-oss-120b describes what the speaker is doing in 1 to 5 words.
+  It runs beside Jev, and a newer reply overtakes a slow one.
+- **Safety check.** Jev answers three Nouls: harm, profanity and violence. The box reads
+  "Nothing harmful" until one goes above 0.5, then turns red.
+- **Yes/No questions.** A Noul for each question, in the same Jev request as the safety
+  check. The questions are editable in place until recording starts, then locked.
+
+Unlike the other Spaces it isn't a Gradio app. The page is hand-built in the style of
+IBM's Granite demo pages
+([Granite Speech Streaming WebGPU](https://huggingface.co/spaces/ibm-granite/granite-speech-streaming-webgpu)),
+with a small FastAPI server behind it, and it runs as a Docker Space.
+
+Deploy it with
+[`scripts/create_speech_to_decisions_space.py`](scripts/create_speech_to_decisions_space.py). It
+needs `HF_TOKEN` and `OPENROUTER_API_KEY` in `.env`:
+
+```bash
+pip install "huggingface_hub>=0.24" python-dotenv
+python scripts/create_speech_to_decisions_space.py
+```
 
 ## ZeroGPU smoke test
 

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Speech to Decisions</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%23121619'/%3E%3Cpath fill='%23fff' d='M18 5 8 18h6l-1 9 10-13h-6z'/%3E%3C/svg%3E" />
+  <meta name="description" content="Speak, and watch Jev and gpt-oss-120b size up what you're saying while you say it." />
+  <!-- IBM Plex (Sans + Mono), the Carbon design system's typeface -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css?v=4" />
+</head>
+<body>
+  <div class="app">
+    <main class="stage">
+      <section class="app-card">
+        <!-- Card header -->
+        <div class="app-header">
+          <div class="app-header__brand">
+            <img class="app-header__logo" src="assets/logo-ibm.svg" alt="IBM" />
+            <span class="app-header__divider" aria-hidden="true"></span>
+            <p class="app-header__title"><strong>Research</strong> Demos</p>
+          </div>
+          <div class="app-header__actions">
+            <button class="btn-pill btn-pill--icon" id="open-info" type="button" aria-label="Info panel" data-tooltip="Info panel">
+              <!-- Carbon: information -->
+              <svg class="btn-pill__icon" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+                <path d="M17 22 17 14 13 14 13 16 15 16 15 22 12 22 12 24 20 24 20 22 17 22z"/>
+                <path d="M16,8a1.5,1.5,0,1,0,1.5,1.5A1.5,1.5,0,0,0,16,8Z"/>
+                <path d="M16,30A14,14,0,1,1,30,16,14,14,0,0,1,16,30ZM16,4A12,12,0,1,0,28,16,12,12,0,0,0,16,4Z"/>
+              </svg>
+            </button>
+            <button class="btn-pill btn-pill--primary" type="button" id="start-over">
+              <!-- Carbon: restart -->
+              <svg class="btn-pill__icon" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true" style="transform:scaleX(-1)">
+                <path d="M26,18A10,10,0,1,1,16,8h6.1821l-3.5844,3.5854L20,13l6-6L20,1,18.5977,2.414,22.1851,6H16A12,12,0,1,0,28,18Z"/>
+              </svg>
+              Start over
+            </button>
+          </div>
+        </div>
+
+        <!-- Two-column workspace -->
+        <div class="workspace" id="workspace">
+          <!-- Left: microphone, then the live transcript -->
+          <div class="ws-col ws-col--left">
+            <div class="panel panel--pad">
+              <div class="recorder-toolbar">
+                <span class="recorder-toolbar__title" id="recorder-title">Listening…</span>
+              </div>
+
+              <div class="record-panel" id="record-panel">
+                <div class="record-visual">
+                  <!-- Voice-bubble cluster: a diamond of dots, each placed by its
+                       offset from the center (--x/--y), diameter (--s) and pulse
+                       delay (--d). It swells with the microphone level. -->
+                  <span class="voice-cluster" id="voice-cluster" aria-hidden="true">
+                    <i class="vdot" style="--x:-15px;--y:-78px;--s:10px;--d:.36s"></i>
+                    <i class="vdot" style="--x:15px;--y:-78px;--s:10px;--d:.36s"></i>
+                    <i class="vdot" style="--x:-45px;--y:-54px;--s:18px;--d:.24s"></i>
+                    <i class="vdot" style="--x:-15px;--y:-54px;--s:18px;--d:.24s"></i>
+                    <i class="vdot" style="--x:15px;--y:-54px;--s:18px;--d:.24s"></i>
+                    <i class="vdot" style="--x:45px;--y:-54px;--s:18px;--d:.24s"></i>
+                    <i class="vdot" style="--x:0px;--y:-40px;--s:12px;--d:0s"></i>
+                    <i class="vdot" style="--x:-31px;--y:-31px;--s:18px;--d:0s"></i>
+                    <i class="vdot" style="--x:31px;--y:-31px;--s:18px;--d:0s"></i>
+                    <i class="vdot" style="--x:-42px;--y:0px;--s:16px;--d:0s"></i>
+                    <i class="vdot" style="--x:42px;--y:0px;--s:16px;--d:0s"></i>
+                    <i class="vdot" style="--x:-31px;--y:31px;--s:18px;--d:0s"></i>
+                    <i class="vdot" style="--x:31px;--y:31px;--s:18px;--d:0s"></i>
+                    <i class="vdot" style="--x:0px;--y:40px;--s:12px;--d:0s"></i>
+                    <i class="vdot" style="--x:-60px;--y:-22px;--s:24px;--d:.12s"></i>
+                    <i class="vdot" style="--x:60px;--y:-22px;--s:24px;--d:.12s"></i>
+                    <i class="vdot" style="--x:-60px;--y:22px;--s:24px;--d:.12s"></i>
+                    <i class="vdot" style="--x:60px;--y:22px;--s:24px;--d:.12s"></i>
+                    <i class="vdot" style="--x:-88px;--y:-22px;--s:8px;--d:.36s"></i>
+                    <i class="vdot" style="--x:88px;--y:-22px;--s:8px;--d:.36s"></i>
+                    <i class="vdot" style="--x:-88px;--y:22px;--s:8px;--d:.36s"></i>
+                    <i class="vdot" style="--x:88px;--y:22px;--s:8px;--d:.36s"></i>
+                    <i class="vdot" style="--x:-45px;--y:54px;--s:18px;--d:.24s"></i>
+                    <i class="vdot" style="--x:-15px;--y:54px;--s:18px;--d:.24s"></i>
+                    <i class="vdot" style="--x:15px;--y:54px;--s:18px;--d:.24s"></i>
+                    <i class="vdot" style="--x:45px;--y:54px;--s:18px;--d:.24s"></i>
+                    <i class="vdot" style="--x:-15px;--y:78px;--s:10px;--d:.36s"></i>
+                    <i class="vdot" style="--x:15px;--y:78px;--s:10px;--d:.36s"></i>
+                  </span>
+                  <button class="record-panel__mic" id="record-trigger" type="button" aria-label="Start talking" aria-pressed="false">
+                    <!-- Carbon: microphone (filled) -->
+                    <svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+                      <path d="M23,14v3a7,7,0,0,1-14,0V14H7v3a9,9,0,0,0,8,8.94V28H11v2H21V28H17V25.94A9,9,0,0,0,25,17V14Z"/>
+                      <path d="M16,22a5,5,0,0,0,5-5V7A5,5,0,0,0,11,7V17A5,5,0,0,0,16,22Z"/>
+                    </svg>
+                  </button>
+                </div>
+
+                <!-- Idle text: shown at rest, hidden while listening. -->
+                <div class="record-panel__text">
+                  <div class="record-panel__title" id="record-title">Tap to start talking</div>
+                  <div class="record-panel__formats" id="record-hint">Your words are judged as you say them</div>
+                </div>
+
+                <!-- Listening: elapsed time and a dotted level meter. -->
+                <div class="record-panel__recording">
+                  <div class="rec-wave" aria-hidden="true">
+                    <div class="rec-wave__bars" id="rec-wave-bars"></div>
+                  </div>
+                  <div class="record-panel__rectime" id="rec-elapsed">00:00</div>
+                </div>
+
+                <!-- Listening bottom bar: the microphone's name and Stop. -->
+                <div class="rec-bar">
+                  <span class="rec-bar__device" id="rec-device">Microphone</span>
+                  <div class="rec-bar__actions">
+                    <button class="rec-bar__btn" id="rec-stop" type="button">
+                      <!-- Carbon: stop (filled) -->
+                      <svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true"><path d="M24,4H8A4,4,0,0,0,4,8V24a4,4,0,0,0,4,4H24a4,4,0,0,0,4-4V8A4,4,0,0,0,24,4Z"/></svg>
+                      <span class="rec-bar__btn-label">Stop</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Transcript: committed text, then the words still open to revision. -->
+              <div class="transcript-block">
+                <div class="block-head">
+                  <span class="canvas-toolbar__title">Transcript</span>
+                  <span class="prompt-card__tag" id="tag-stt">Parakeet</span>
+                </div>
+                <div class="transcription-wrap">
+                  <div class="transcription" id="transcript" data-placeholder="true">Your words will appear here as you speak…</div>
+                  <div class="telemetry-pills" id="telemetry">
+                    <span class="telemetry-pill" id="tel-stt" hidden></span>
+                    <span class="telemetry-pill" id="tel-jev" hidden></span>
+                    <span class="telemetry-pill" id="tel-describe" hidden></span>
+                    <span class="telemetry-pill" id="tel-cost" hidden></span>
+                  </div>
+                </div>
+                <p class="notice" id="notice" hidden></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: the board -->
+          <div class="ws-col ws-col--right">
+            <div class="canvas-frame">
+              <div class="canvas-toolbar">
+                <span class="canvas-toolbar__title">Decisions</span>
+                <span class="prompt-card__tag" id="tag-scope">Last 25 words</span>
+                <span class="telemetry-pill" id="tag-quiet" hidden>Waiting for speech</span>
+              </div>
+
+              <div class="canvas-body">
+                <div class="judgment-row">
+                  <!-- What the speaker is doing, in a few words -->
+                  <div class="judgment judgment--doing">
+                    <div class="judgment__head">
+                      <span class="judgment__label">The speaker is</span>
+                      <span class="telemetry-pill" id="tag-describe">gpt-oss-120b</span>
+                    </div>
+                    <div class="judgment__value" id="doing" data-placeholder="true">—</div>
+                  </div>
+
+                  <!-- Safety check: a verdict and a bar per category -->
+                  <div class="judgment judgment--safety" id="safety">
+                    <div class="judgment__head">
+                      <span class="judgment__label">Safety check</span>
+                      <span class="telemetry-pill" id="tag-jev-safety">Jev</span>
+                      <span class="verdict" id="verdict" hidden></span>
+                    </div>
+                    <div class="noul-list noul-list--compact" id="safety-list"></div>
+                  </div>
+                </div>
+
+                <!-- Yes/no questions: each row is a question in a text field, its
+                     bar and its noul. The rows lock while the microphone is on. -->
+                <div class="questions" id="questions">
+                  <div class="judgment__head">
+                    <span class="judgment__label">Yes/No questions (edit the list to customize)</span>
+                    <span class="telemetry-pill" id="tag-locked" hidden>Locked while recording</span>
+                    <span class="telemetry-pill" id="tag-jev">Jev</span>
+                  </div>
+                  <div class="noul-list" id="noul-list"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Info panel (dark, floating) -->
+        <aside class="info-panel" id="info-panel" role="dialog" aria-labelledby="info-panel-title">
+          <div class="info-panel__main">
+            <div class="info-panel__header">
+              <div>
+                <h2 class="info-panel__title" id="info-panel-title">Speech to Decisions</h2>
+                <p class="info-panel__subtitle">Live speech, sized up as you talk</p>
+              </div>
+              <div class="info-panel__actions">
+                <button class="info-panel__close info-panel__icon-btn" id="close-info" type="button" aria-label="Close panel">
+                  <!-- Carbon: close -->
+                  <svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+                    <polygon points="17.4141 16 24 9.4141 22.5859 8 16 14.5859 9.4143 8 8 9.4141 14.5859 16 8 22.5859 9.4143 24 16 17.4141 22.5859 24 24 22.5859 17.4141 16"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="info-panel__body">
+              <p>Talk into your microphone. Parakeet turns your speech into text, and about once a
+                 second two models judge your last <span id="info-words">25</span> words: gpt-oss-120b
+                 says what you're doing, and Jev screens for harmful content and answers every
+                 yes/no question. After <span id="info-quiet">10</span> seconds of silence the board goes blank
+                 until you speak again. Your audio is sent to this Space and on to OpenRouter.</p>
+              <p class="info-panel__list-title">On the board:</p>
+              <ul>
+                <li>What the speaker is doing, in 1 to 5 words</li>
+                <li>A safety check for harm, profanity and violence</li>
+                <li>Yes/no questions you can edit before you talk</li>
+              </ul>
+            </div>
+
+            <div class="info-panel__footer" id="info-tags">
+              <span class="tag">Parakeet-TDT-0.6B-v3</span>
+              <span class="tag">Jev-1.13</span>
+              <span class="tag">gpt-oss-120b</span>
+              <span class="tag">OpenRouter</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    // If a script or stylesheet fails to load, say so where it's visible.
+    addEventListener('error', function (event) {
+      var src = event.target && (event.target.src || event.target.href);
+      if (!src) return;
+      var el = document.getElementById('record-title');
+      if (el) el.textContent = 'Failed to load ' + src.split('/').pop().split('?')[0];
+    }, true);
+  </script>
+  <!-- A classic script, not a module: on a private Space the page sits in a
+       cross-site iframe, where module fetches aren't authenticated. -->
+  <script src="app.js?v=3"></script>
+</body>
+</html>
