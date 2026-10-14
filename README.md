@@ -39,6 +39,7 @@ There are six, in two groups.
 |---|---|---|
 | [Thinking Fast and Slow with Granite](spaces/jev-noul-mimic/README.md) | One 3B model doing two kinds of thinking next to TypeSafe AI's Jev. **Thinking Fast** answers yes/no questions with a *noul* (the probability the answer is yes) read from Granite's one-token answer. **Thinking Slow** writes an answer, then scores its own certainty with the uncertainty (UQ) adapter through Mellea. | [`spaces/jev-noul-mimic/`](spaces/jev-noul-mimic/) |
 | [Noul Race](spaces/noul-race/README.md) | Races Granite Switch against Jev and OpenAI's GPT Luna on the same context and questions, with live stopwatches and accuracy against an answer key. An **Obstacle Course** tab mixes yes/no and freeform questions, one at a time; a **Sprint** tab runs yes/no questions in parallel. | [`spaces/noul-race/`](spaces/noul-race/), [`scripts/create_noul_race_space.py`](scripts/create_noul_race_space.py) |
+| [Decisions Switching Costs](spaces/split-decisions/README.md) | Five models race a random Wikipedia article's 10 yes/no and 5 one-word brainstorming questions, one at a time: Granite Switch, JEV-9B, Gemma Decider (Gemma 4 31B read through decider), GPT Luna and Jev + Qwen. Bars grow as each model runs and swap places as they finish. IBM Carbon styling. Nothing is scored. | [`spaces/split-decisions/`](spaces/split-decisions/), [`scripts/create_split_decisions_space.py`](scripts/create_split_decisions_space.py) |
 | [Speech to Decisions](spaces/speech-to-decisions/README.md) | Speak into the microphone and models size up what you're saying while you say it. NVIDIA's Parakeet transcribes the speech. About once a second, gpt-oss-120b says what the speaker is doing in 1 to 5 words, and one Jev request screens the words for harmful content and answers a list of yes/no questions. All three models run on OpenRouter; there's no Granite in this one. | [`spaces/speech-to-decisions/`](spaces/speech-to-decisions/), [`scripts/create_speech_to_decisions_space.py`](scripts/create_speech_to_decisions_space.py) |
 | [ZeroGPU smoke test](spaces/zerogpu-smoke/README.md) | A one-button Space that grabs a ZeroGPU slot and reports the device, VRAM and CUDA version. Used to check ZeroGPU allocation before deploying Activity 2. It doesn't call the endpoint. | [`spaces/zerogpu-smoke/`](spaces/zerogpu-smoke/), [`scripts/create_smoke_space.py`](scripts/create_smoke_space.py) |
 
@@ -319,8 +320,8 @@ generation quality — after deploying, send one message per adapter as a manual
 
 # Spaces
 
-Three smaller demos live under [`spaces/`](spaces/), each a self-contained Gradio Space
-folder with its own README, `app.py` and `requirements.txt`. The two noul demos call the
+Five smaller demos live under [`spaces/`](spaces/), each a self-contained Gradio Space
+folder with its own README, `app.py` and `requirements.txt`. The two noul demos and Decisions Switching Costs call the
 Activity 1 endpoint, so they run on free CPU hardware; the GPU work happens on the
 endpoint.
 
@@ -383,6 +384,49 @@ python scripts/create_noul_race_space.py
 
 It needs `HF_TOKEN` and `HF_ENDPOINT_URL` in `.env`, plus `OPENROUTER_API_KEY` (Jev and
 question generation) and `OPENAI_API_KEY` (GPT Luna) and `JEV9B_ENDPOINT_URL` (JEV-9B) for the full race.
+
+## Decisions Switching Costs
+
+[`spaces/split-decisions/`](spaces/split-decisions/) · [README](spaces/split-decisions/README.md)
+
+A simpler page that grew out of Noul Race's Obstacle Course. It times five models on a
+mix of yes/no (⚡) and one-word brainstorming (💬) questions, one at a time, and scores
+nothing.
+
+- **A round is ready when the page opens.** It pulls a random Wikipedia article and has
+  `openai/gpt-oss-120b` write 10 yes/no and 5 freeform questions. The article's title is
+  shown and its text is behind **Read the article**. There is nothing to type.
+- **Time chart.** A bar per model grows as it runs, split question by question into
+  decision time (yellow, like ⚡) and chat time (grey, like 💬). Finishers get 🥇 🥈 🥉.
+- **Compact table.** A row per question and a column per model, filling downwards as
+  answers arrive. A noul is shown as `0.97 (Yes)`; a freeform answer as written.
+- **Jev + Qwen.** Jev returns decisions only, so `qwen/qwen3.8-27b`, with reasoning off,
+  writes its freeform answers. Jev no longer drops out.
+- **GPT Luna on OpenRouter.** Decisions go to `openai/gpt-6-luna-decisions` and text to
+  `openai/gpt-6-luna`, on OpenAI's priority tier. The Space needs no OpenAI key and no TypeSafe SDK: Jev and Luna
+  Decisions take the same request over plain HTTP.
+- **Fastest provider.** Every OpenRouter chat request sorts providers by throughput.
+- **Granite Switch and JEV-9B** are called as in Noul Race, on their own endpoints.
+- **Gemma Decider.** `Mapika/decider-chat-gemma4-31b` on its own A100 endpoint
+  ([`scripts/create_gemma_decider_endpoint.py`](scripts/create_gemma_decider_endpoint.py)).
+  Decisions are read from the base model's answer-letter probabilities with decider's own
+  prompt code, as in [`scripts/gemma_decider_client.py`](scripts/gemma_decider_client.py);
+  freeform questions are a chat completion on the same model.
+- **Look.** IBM Carbon, after IBM's Granite Vision Document Intelligence Space: Plex type,
+  white panels in a cool-grey frame, an About panel on first load. The race bars swap
+  places as models finish, so first place is always on top.
+- **One runner.** Each model is a small class with a `noul` method and a `freeform`
+  method, and one function takes any of them through the questions. A model that can't
+  run is greyed out and the others carry on.
+
+Deploy it with
+[`scripts/create_split_decisions_space.py`](scripts/create_split_decisions_space.py). It
+needs `HF_TOKEN`, `HF_ENDPOINT_URL` and `OPENROUTER_API_KEY` in `.env`, plus
+`JEV9B_ENDPOINT_URL` for JEV-9B and `GEMMA_DECIDER_ENDPOINT_URL` for Gemma Decider:
+
+```bash
+python scripts/create_split_decisions_space.py
+```
 
 ## Speech to Decisions
 

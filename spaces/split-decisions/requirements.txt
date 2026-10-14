@@ -1,0 +1,8 @@
+openai>=1.40.0
+huggingface_hub
+pyyaml
+httpx
+# The Gemma decider's tokenizer (no torch needed). decider-ai itself is
+# installed by app.py without its dependencies.
+transformers>=5
+jinja2
