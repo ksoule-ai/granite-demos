@@ -96,6 +96,10 @@ mentions the PR.
 
 The tab counts (benchmarks, cards, commits) come from the data automatically.
 
+`SPACE.id` (for example `"ksoule/granitelib-evals"`) is the Hugging Face Space that the
+**Like** and **Open in Spaces** buttons point at. They appear only in the embedded version. Change it if the Space is
+renamed or moved; remove it to hide both buttons.
+
 ## 3. Validate and preview
 
 ```bash

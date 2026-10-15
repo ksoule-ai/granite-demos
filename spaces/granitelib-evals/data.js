@@ -2,6 +2,9 @@
 // Everything after the "=" is plain JSON, so scripts/validate_granitelib_evals.py and
 // scripts/check_granitelib_evals.py can read it. See UPDATING.md before editing.
 window.GRANITELIB_DATA = {
+  "SPACE": {
+    "id": "ksoule/granitelib-evals"
+  },
   "DM": [
     {
       "id": "jev",

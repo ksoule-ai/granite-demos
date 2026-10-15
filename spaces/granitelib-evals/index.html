@@ -53,7 +53,28 @@ img { max-width: 100%; }
 body { background: var(--bg); color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-height: 1.5; }
 a { color: var(--ink-2); }
 .wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 32px 48px; display: flex; flex-direction: column; gap: 20px; }
-header { display: flex; flex-direction: column; gap: 6px; }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px 16px; }
+.hf-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.hf-links[hidden] { display: none; }
+.hf-btn { font-size: 13px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; color: var(--ink); text-decoration: none; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; }
+.hf-btn:hover { background: color-mix(in srgb, var(--ink) 6%, var(--surface)); }
+.hf-btn svg { flex: none; }
+.hf-btn .count { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* embedded on another site: no page title; the Hugging Face buttons move onto the tab row */
+.embedded header { display: none; }
+.embedded .wrap { padding-block-start: 16px; }
+.tabs-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px 16px; border-bottom: 1px solid var(--border); }
+.tabs-row .tabs { border-bottom: 0; }
+.tabs-row .hf-links { padding-bottom: 6px; }
+.hf-blocked { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 10px; font-size: 13px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+.hf-blocked-url { font-family: var(--font-mono); font-size: 12px; color: var(--ink); user-select: all; overflow-wrap: anywhere; }
+.hf-blocked-where { flex-basis: 100%; font-family: var(--font-mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.hf-blocked-close { margin-left: auto; font: inherit; font-size: 16px; line-height: 1; color: var(--muted); background: none; border: 0; cursor: pointer; padding: 2px 6px; }
+@media (max-width: 560px) {
+  .tabs-row { flex-wrap: wrap; }
+  .tabs-row .hf-links { order: -1; width: 100%; justify-content: flex-end; padding-bottom: 2px; }
+  .tabs-row .tabs { width: 100%; }
+}
 h1 { margin: 0; font-size: 28px; line-height: 1.2; font-weight: 600; text-wrap: balance; }
 h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.3; text-wrap: balance; }
 .lede { margin: 0; color: var(--ink-2); max-width: 70ch; }
@@ -85,7 +106,6 @@ h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.3; text-wrap: 
 .legend .chip { font-size: 12.5px; padding: 3px 8px 3px 5px; gap: 5px; }
 /* heading on the left; legend and filter share the top right, the legend wrapping to a second line if it must */
 .sb-head { display: flex; justify-content: flex-end; padding: 0 6px; }
-.sb-foot { padding: 4px 6px 0; }
 .ehead-top h2 { flex: none; }
 @media (max-width: 900px) {
   .ehead-top, .head-tools { flex-wrap: wrap; }
@@ -221,6 +241,10 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 <div class="wrap">
   <header>
     <h1>Granitelib Adapters vs Decision Models</h1>
+    <div class="hf-links" id="hf-links" hidden>
+      <a class="hf-btn" id="hf-like" target="_blank" rel="noopener"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.3-9.2C1.4 7.9 3.6 4.5 7 4.5c2 0 3.6 1.1 5 2.9 1.4-1.8 3-2.9 5-2.9 3.4 0 5.6 3.4 4.3 6.8-1.8 4.6-9.3 9.2-9.3 9.2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span class="count" id="hf-like-count" hidden></span><span>Like</span></a>
+      <a class="hf-btn" id="hf-open" target="_blank" rel="noopener">Open in Spaces<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+    </div>
   </header>
 
   <nav class="tabs" role="tablist" aria-label="Views">
@@ -237,7 +261,6 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
         </div>
       </div>
       <div class="dots" id="sb-dots" style="--label-w: 21rem"></div>
-      <p class="note sb-foot" id="sb-foot" hidden></p>
       <div class="tip" id="sb-tip" hidden></div>
     </div>
   </section>
@@ -280,6 +303,17 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
   const HF = "https://huggingface.co/ibm-granite/";
 
   // ---------- data: scores and sources live in data.js (see UPDATING.md) ----------
+  // Embedded on another site, or ?embed in the URL: hide the page title (the stylesheet keys off .embedded).
+  // Only on the Space's own host, so the Hub's Space page (which frames the app) and other copies keep it.
+  const embedded = (() => {
+    const q = new URLSearchParams(location.search);
+    if (q.has("embed")) return q.get("embed") !== "0";
+    let framed = true;
+    try { framed = window.self !== window.top; } catch (e) {}
+    return framed && location.hostname.endsWith(".hf.space") && !/^https:\/\/huggingface\.co\//.test(document.referrer || "");
+  })();
+  if (embedded) document.documentElement.classList.add("embedded");
+
   const D = window.GRANITELIB_DATA;
   const DM = D.DM, REPOS = D.REPOS, COMMITS = D.COMMITS, PRS = D.PRS, EVALS = D.EVALS, OOD_SETS = D.OOD_SETS, OOD = D.OOD;
   const GRANITE = { id: "granite", marker: "circle", dash: "" };
@@ -604,9 +638,6 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
     const dom = domainFor(cellsList);
     dom.lo = 50; dom.hi = 100; dom.step = 10;  // scoreboard axis runs 50–100
     dotPlot(document.getElementById("sb-dots"), document.getElementById("sb-tip"), document.getElementById("sb-panel"), rows, Object.assign(dom, { labelHead: "Benchmark" }));
-    const off = offScoreboard().map(id => dmById(id).name), foot = document.getElementById("sb-foot");
-    foot.hidden = !off.length;
-    foot.textContent = off.length ? `${off.join(" and ")} ${off.length > 1 ? "are" : "is"} left off the scoreboard; ${off.length > 1 ? "they appear" : "it appears"} on the Evaluations tab.` : "";
   }
 
   // ---------- evaluations ----------
@@ -952,6 +983,68 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
   document.getElementById("count-benchmarks").textContent = `${EVALS.reduce((n, e) => n + e.headline.length, 0)} benchmarks`;
   document.getElementById("count-cards").textContent = `${EVALS.length} cards`;
   document.getElementById("count-sources").textContent = `${nCommits} commits` + (nPrs ? ` · ${nPrs} PR${nPrs > 1 ? "s" : ""}` : "");
+  // Hugging Face buttons, embedded version only. A visitor can't like from inside an iframe, so "Like" opens the
+  // Space page, where the like button lives.
+  // The HF blog rewrites every embedded iframe to sandbox="allow-scripts": no pop-ups, no top navigation, and an
+  // opaque ("null") origin. Links can't leave such a frame, so skip the buttons there; put links in the post instead.
+  const linksCanLeave = self.origin !== "null";
+  if (embedded && linksCanLeave && D.SPACE && D.SPACE.id) {
+    const url = `https://huggingface.co/spaces/${D.SPACE.id}`;
+    const links = document.getElementById("hf-links");
+    const like = document.getElementById("hf-like"), open = document.getElementById("hf-open"), count = document.getElementById("hf-like-count");
+    like.href = url; open.href = url;
+    like.setAttribute("aria-label", "Like this demo on Hugging Face (opens the Space page)");
+    open.setAttribute("aria-label", "Open in Spaces: this demo on its Hugging Face Space page");
+    // Some hosts sandbox their iframes, so a link can't open a new tab or leave the host page. Try a new tab, then
+    // the whole window. Never load the Space page inside this frame: huggingface.co refuses to be framed.
+    // If both are blocked, say so and offer the link to copy.
+    let leaving = false;
+    window.addEventListener("pagehide", () => { leaving = true; });
+    const go = e => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;  // leave modified clicks to the browser
+      e.preventDefault();
+      const w = window.open(url, "_blank");
+      if (w) { try { w.opener = null; } catch (err) {} return; }
+      try { window.top.location.href = url; } catch (err) { showBlocked(); return; }
+      setTimeout(() => { if (!leaving) showBlocked(); }, 800);  // some browsers block it without throwing
+    };
+    function showBlocked() {
+      let note = document.getElementById("hf-blocked");
+      if (!note) {
+        note = h("div", "hf-blocked"); note.id = "hf-blocked"; note.setAttribute("role", "status");
+        const text = h("span", "", "This site blocks links from embedded demos. To open the Space, copy its link:");
+        const link = h("code", "hf-blocked-url", url);
+        const copy = h("button", "chip", "Copy link"); copy.type = "button";
+        copy.addEventListener("click", () => {
+          const select = () => { const r = document.createRange(); r.selectNodeContents(link); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); };
+          // the async clipboard API needs the host iframe to allow clipboard-write; fall back to the older copy command
+          const legacy = () => { select(); let ok = false; try { ok = document.execCommand("copy"); } catch (err) {} return ok; };
+          const done = ok => { copy.textContent = ok ? "Copied" : "Selected: press Ctrl/Cmd+C"; if (!ok) select(); };
+          try { navigator.clipboard.writeText(url).then(() => done(true), () => done(legacy())); } catch (err) { done(legacy()); }
+        });
+        const close = h("button", "hf-blocked-close", "\u00d7"); close.type = "button"; close.setAttribute("aria-label", "Dismiss");
+        close.addEventListener("click", () => note.remove());
+        // which pages frame this one, outermost last; helps tell which host is blocking links
+        const chain = location.ancestorOrigins ? [...location.ancestorOrigins] : [];
+        const where = h("span", "hf-blocked-where", `Embedded via: ${chain.length ? chain.join(" → ") : document.referrer || "unknown"}`);
+        note.append(text, link, copy, close, where);
+        document.querySelector(".tabs-row").insertAdjacentElement("afterend", note);
+      }
+      note.querySelector(".hf-blocked-url").focus?.();
+    }
+    like.addEventListener("click", go);
+    open.addEventListener("click", go);
+    // put the buttons at the right end of the tab bar, sharing its underline
+    const tabsNav = document.querySelector("nav.tabs"), row = h("div", "tabs-row");
+    tabsNav.parentNode.insertBefore(row, tabsNav);
+    row.append(tabsNav, links);
+    links.hidden = false;
+    fetch(`https://huggingface.co/api/spaces/${D.SPACE.id}`).then(r => (r.ok ? r.json() : null)).then(info => {
+      if (!info || typeof info.likes !== "number") return;
+      count.textContent = String(info.likes); count.hidden = false;
+      like.setAttribute("aria-label", `Like this demo on Hugging Face, ${info.likes} like${info.likes === 1 ? "" : "s"} so far (opens the Space page)`);
+    }).catch(() => {});
+  }
   renderSources();
   refresh();
   setView(VIEWS.includes(initial) ? initial : "scoreboard", true);

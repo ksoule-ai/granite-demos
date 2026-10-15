@@ -459,6 +459,10 @@ python scripts/create_granitelib_evals_space.py
 The check script reads public repos, so `HF_TOKEN` is optional there; the deploy script
 needs it with write scope.
 
+To embed it elsewhere, iframe `https://ksoule-granitelib-evals.static.hf.space/?embed`: `?embed`
+hides the page title and adds Like and Open in Spaces buttons (details in the Space's
+[README](spaces/granitelib-evals/README.md#embedding)).
+
 ## ZeroGPU smoke test
 
 [`spaces/zerogpu-smoke/`](spaces/zerogpu-smoke/) · [README](spaces/zerogpu-smoke/README.md)
