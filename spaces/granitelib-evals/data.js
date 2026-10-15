@@ -93,6 +93,22 @@ window.GRANITELIB_DATA = {
     ],
     "granitelib-guardian-r1.0": [
       {
+        "sha": "bcc562775f3f0f6c8ea7dfdb4c5cffc8f17318cb",
+        "date": "15 Oct 2026",
+        "time": "14:17",
+        "title": "Update factuality-detection/README.md with decision models evals (#45)",
+        "files": ["factuality-detection/README.md"],
+        "took": "Merged PR #45: adds clef-flash, jev-1.13, microsoft-decision-1 and gpt-6-luna-decisions to the factuality-detection ELI5 and BIO tables. Same numbers as the PR."
+      },
+      {
+        "sha": "6b4443a86f685e4e1d668f41f580889287a4835d",
+        "date": "15 Oct 2026",
+        "time": "13:48",
+        "title": "Update guardian-core/README.md",
+        "files": ["guardian-core/README.md"],
+        "took": "Corrected the OOD Safety averages for jev-1.13 (0.77 → 0.78) and microsoft-decision-1 (0.78 → 0.79) in the per-dataset table. Dataset scores unchanged."
+      },
+      {
         "sha": "1a1a488a51d0d5307e30e5b3c1e66b4a5237d18a",
         "date": "14 Oct 2026",
         "time": "18:09",
@@ -134,18 +150,7 @@ window.GRANITELIB_DATA = {
       }
     ]
   },
-  "PRS": {
-    "granitelib-guardian-r1.0": [
-      {
-        "num": 45,
-        "url": "https://huggingface.co/ibm-granite/granitelib-guardian-r1.0/discussions/45",
-        "opened": "14 Oct 17:20",
-        "title": "Update factuality-detection/README.md with decision models evals",
-        "files": ["factuality-detection/README.md"],
-        "took": "Adds clef-flash, jev-1.13, microsoft-decision-1 and gpt-6-luna-decisions to the factuality-detection ELI5 and BIO tables. Still open and not merged; it is the source for the Factuality Detection card here."
-      }
-    ]
-  },
+  "PRS": {},
   "EVALS": [
     {
       "id": "guardian-core",
@@ -203,14 +208,6 @@ window.GRANITELIB_DATA = {
       "anchor": "evaluation",
       "task": "Is a response factually incorrect? Labels come from the FactReasoner pipeline: a response is incorrect when its factuality score is below 0.8.",
       "scale": 1,
-      "pr": {
-        "num": 45,
-        "url": "https://huggingface.co/ibm-granite/granitelib-guardian-r1.0/discussions/45",
-        "by": "radum2275",
-        "opened": "14 Oct 2026, 17:20 UTC",
-        "title": "Update factuality-detection/README.md with decision models evals",
-        "file": "https://huggingface.co/ibm-granite/granitelib-guardian-r1.0/blob/refs%2Fpr%2F45/factuality-detection/README.md#evaluation"
-      },
       "metrics": [
         {
           "name": "ELI5 AUC",
@@ -299,10 +296,9 @@ window.GRANITELIB_DATA = {
         "30b-alora": ["0.87", "0.82", "0.72", "0.94", "0.76", "0.80", "0.80", "0.70", "0.94", "0.72"]
       },
       "caveats": [
-        "These results come from open pull request #45, which hasn't been merged into the card yet, so the numbers may still change.",
-        "The PR lists the decision models under a \"SystemOne\" group. It does not describe how they were prompted."
+        "The card lists the decision models under a \"SystemOne\" group and does not describe how they were prompted."
       ],
-      "sourceNote": "From the ELI5 and BIO tables in PR #45. The card also lists base models and granite-4.0-micro LoRA, which are left out here."
+      "sourceNote": "From the card's ELI5 and BIO tables. The card also lists base models and granite-4.0-micro LoRA, which are left out here."
     },
     {
       "id": "requirement-check",
@@ -499,8 +495,8 @@ window.GRANITELIB_DATA = {
       "30b-alora": ["0.81", "0.87", "0.82", "0.80", "0.82", "0.82", "0.99", "0.76", "0.92", "0.45", "0.85"]
     },
     "dm": {
-      "jev": ["0.77", "0.75", "0.72", "0.76", "0.83", "0.81", "0.99", "0.75", "0.93", "0.42", "0.81"],
-      "msd": ["0.78", "0.76", "0.77", "0.77", "0.83", "0.81", "0.98", "0.72", "0.91", "0.47", "0.86"],
+      "jev": ["0.78", "0.75", "0.72", "0.76", "0.83", "0.81", "0.99", "0.75", "0.93", "0.42", "0.81"],
+      "msd": ["0.79", "0.76", "0.77", "0.77", "0.83", "0.81", "0.98", "0.72", "0.91", "0.47", "0.86"],
       "gpt": ["0.77", "0.72", "0.78", "0.75", "0.84", "0.80", "0.98", "0.59", "0.90", "0.48", "0.85"],
       "clef": ["0.76", "0.75", "0.75", "0.72", "0.83", "0.70", "0.99", "0.76", "0.87", "0.44", "0.79"]
     }

@@ -39,7 +39,9 @@ valid JSON: double quotes, no trailing commas, no comments.
   full 40-character `sha`, `date` ("15 Oct 2026"), `time` ("17:30", UTC), the commit
   `title`, the `files` it touched, and `took`, a sentence on what it changed.
 - **An unmerged pull request** goes in `PRS["<repo>"]` with `num`, `url`, `opened`,
-  `title`, `files` and `took`. The card then gets a `pr` block; see `factuality-detection`.
+  `title`, `files` and `took`. The card then gets a `pr` block with `num`, `url`, `by`,
+  `opened`, `title` and `file`, where `file` links to the card's README at the PR revision
+  (`.../blob/refs%2Fpr%2F<num>/<card>/README.md`).
 
 **Update a card.** Find its entry in `EVALS` by `id` and change the score rows. If the card
 added a metric, add it to `metrics` and add a value to every row, in the same order.

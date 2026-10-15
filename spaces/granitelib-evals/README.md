@@ -22,7 +22,7 @@ The scores are transcribed from the model cards as of 14 October 2026, when the 
 
 | Repo | Card | Benchmarks |
 |---|---|---|
-| [granitelib-guardian-r1.0](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0) | factuality-detection, from open [PR #45](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0/discussions/45) | ELI5 and Biographies factuality: AUC, F1, precision, recall, accuracy |
+| [granitelib-guardian-r1.0](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0) | factuality-detection | ELI5 and Biographies factuality: AUC, F1, precision, recall, accuracy |
 | [granitelib-guardian-r1.0](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0) | guardian-core | OOD Safety (plus 10 per-dataset scores), LM-AggreFact, Function Calling Reward Bench |
 | [granitelib-core-r1.0](https://huggingface.co/ibm-granite/granitelib-core-r1.0) | requirement-check | IFEval, InfoBench-GPT4, InfoBench-Human |
 | [granitelib-rag-r1.0](https://huggingface.co/ibm-granite/granitelib-rag-r1.0) | answerability | MT-RAG answerability (4 metrics) |

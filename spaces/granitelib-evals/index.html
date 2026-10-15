@@ -252,7 +252,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
   <section class="view" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources" hidden>
     <section class="panel table-panel">
       <h2>Commits scanned</h2>
-      <p class="note">Every commit to the three repos that added or changed decision-model results, newest first. Only model-card READMEs changed; the scores here come from each card as it stands after the last commit listed. Factuality Detection comes from an open pull request instead, listed under its repo.</p>
+      <p class="note">Every commit to the three repos that added or changed decision-model results, newest first. Only model-card READMEs changed; the scores here come from each card as it stands after the last commit listed. A card that comes from an open pull request says so in its header, and the PR is listed under its repo.</p>
       <div class="commits" id="commits"></div>
     </section>
     <section class="panel table-panel">
@@ -266,7 +266,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
         <li>Margin is the Granite adapter's score minus the best decision model on that benchmark, in points. Pick a decision model under Compare to measure against that model instead.</li>
         <li>Click the Granite chip in the legend to change the adapter. It defaults to "Best per benchmark", the highest-scoring adapter on each benchmark, which is how the guardian and requirement-check cards fill their "Best trained adapter" column. Picking a single adapter, such as the 30B aLoRA, shows that adapter everywhere; the hallucination detection card publishes LoRA adapters only, so an aLoRA choice falls back to the LoRA of the same size there and is flagged.</li>
         <li>On guardian-core, decision-model scores come from the card's comparison table and Granite scores from its per-adapter tables, which report OOD Safety and Function Calling to two decimals.</li>
-        <li>Factuality Detection's scores come from open pull request #45 on granitelib-guardian-r1.0, which had not been merged when they were added here (15 October 2026). Its headline metric is F1 on each test set.</li>
+        <li>Factuality Detection's headline metric is F1 on each of its two test sets, ELI5 and Biographies.</li>
         <li>The RAG cards compare openjev/openjev, which they do not mark as hosted, plus three hosted models. The core and guardian cards compare four hosted models, including clef-flash, and not openjev.</li>
       </ul>
     </section>
@@ -656,7 +656,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
       meta.appendChild(ps);
     }
     const cm = ev.pr ? [] : COMMITS[ev.repo].filter(c => c.files.includes(ev.card + "/README.md"));
-    const cs = h("span", "", cm.length ? "Commits today: " : "");
+    const cs = h("span", "", cm.length ? "Commits: " : "");
     cm.slice().reverse().forEach((c, k) => {
       const l = h("a", "", c.sha.slice(0, 7)); l.href = `${HF}${ev.repo}/commit/${c.sha}`; l.target = "_blank"; l.rel = "noopener"; l.title = c.title;
       const code = h("code"); code.appendChild(l);

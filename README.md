@@ -430,9 +430,8 @@ page collects them: six cards across
 [granitelib-rag-r1.0](https://huggingface.co/ibm-granite/granitelib-rag-r1.0),
 [granitelib-core-r1.0](https://huggingface.co/ibm-granite/granitelib-core-r1.0) and
 [granitelib-guardian-r1.0](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0),
-eleven headline benchmarks in all. The factuality-detection card comes from an open pull
-request ([#45](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0/discussions/45))
-that hasn't been merged yet.
+eleven headline benchmarks in all. The factuality-detection results arrived on 15 October
+in pull request [#45](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0/discussions/45).
 
 - **Scoreboard.** Every benchmark on one 0–100 scale, with the Granite adapter's margin
   over the best decision model.
