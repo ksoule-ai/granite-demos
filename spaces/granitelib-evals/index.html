@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Every granitelib evaluation that compares Granite 4.1 adapters with decision models, gathered from the ibm-granite model cards.">
+<style>
+:root { color-scheme: light; }
+body { margin: 0; font-size: 14px; }
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+</style>
+<title>Granitelib vs Decision Models</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: header, a legend at the top right of the scoreboard and of each card (click Granite to change adapter, a decision model to compare), tabs under the page header, three tabs: scoreboard of every benchmark, per-evaluation detail, sources. */
+:root {
+  --bg: #f3f4f6;
+  --surface: #fcfcfc;
+  --ink: #121619;
+  --ink-2: #4d5358;
+  --muted: #737a82;
+  --grid: #e0e2e6;
+  --axis: #c1c7cd;
+  --border: rgba(18,22,25,0.10);
+  --adapter: #2a78d6;
+  --spot: #eb6834;
+  --other: #8d9096;
+  --chip-on: #121619;
+  --chip-on-ink: #fcfcfc;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1012; --surface: #1a1b1d; --ink: #f2f4f8; --ink-2: #c1c7cd; --muted: #8d939b;
+    --grid: #2c2e31; --axis: #42464b; --border: rgba(255,255,255,0.10);
+    --adapter: #3987e5; --spot: #d95926; --other: #8a8f96;
+    --chip-on: #f2f4f8; --chip-on-ink: #1a1b1d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1012; --surface: #1a1b1d; --ink: #f2f4f8; --ink-2: #c1c7cd; --muted: #8d939b;
+  --grid: #2c2e31; --axis: #42464b; --border: rgba(255,255,255,0.10);
+  --adapter: #3987e5; --spot: #d95926; --other: #8a8f96;
+  --chip-on: #f2f4f8; --chip-on-ink: #1a1b1d;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-height: 1.5; }
+a { color: var(--ink-2); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 32px 48px; display: flex; flex-direction: column; gap: 20px; }
+header { display: flex; flex-direction: column; gap: 6px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+h1 { margin: 0; font-size: 28px; line-height: 1.2; font-weight: 600; text-wrap: balance; }
+h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.3; text-wrap: balance; }
+.lede { margin: 0; color: var(--ink-2); max-width: 70ch; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.note { margin: 0; font-size: 13px; color: var(--muted); max-width: 75ch; }
+
+/* controls */
+.ctl-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.ctl-label { font-size: 12px; color: var(--muted); margin-right: 4px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em; }
+.chip { font: inherit; font-size: 13px; color: var(--ink); background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px 4px 6px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.chip:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.chip[aria-pressed="true"] { border-color: var(--spot); box-shadow: inset 0 0 0 1px var(--spot); }
+.adapter-chip { padding-right: 8px; }
+.adapter-chip .caret { font-size: 10px; color: var(--muted); }
+.adapter-chip[aria-expanded="true"] { border-color: var(--adapter); box-shadow: inset 0 0 0 1px var(--adapter); }
+.adapter-menu { position: fixed; z-index: 20; min-width: 230px; display: flex; flex-direction: column; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
+.adapter-menu[hidden] { display: none; }
+.menu-title { padding: 4px 10px 6px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.menu-opt { font: inherit; font-size: 14px; color: var(--ink); text-align: left; background: none; border: 0; border-radius: 6px; padding: 7px 10px; cursor: pointer; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.menu-opt:hover, .menu-opt:focus-visible { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.menu-opt[aria-selected="true"] { font-weight: 600; }
+.menu-opt .check { color: var(--adapter); visibility: hidden; }
+.menu-opt[aria-selected="true"] .check { visibility: visible; }
+.menu-opt small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+.menu-opt.best { margin-top: 4px; border-top: 1px solid var(--grid); border-radius: 0 0 6px 6px; padding-top: 9px; }
+.head-tools { display: flex; flex: 1 1 auto; justify-content: flex-end; align-items: flex-start; gap: 8px 12px; min-width: 0; }
+.legend-slot { flex: 1 1 auto; min-width: 0; }
+.legend { justify-content: flex-end; gap: 6px; }
+.legend .chip { font-size: 12.5px; padding: 3px 8px 3px 5px; gap: 5px; }
+/* heading on the left; legend and filter share the top right, the legend wrapping to a second line if it must */
+.sb-head { display: flex; justify-content: flex-end; padding: 0 6px; }
+.sb-foot { padding: 4px 6px 0; }
+.ehead-top h2 { flex: none; }
+@media (max-width: 900px) {
+  .ehead-top, .head-tools { flex-wrap: wrap; }
+  .sb-head { justify-content: flex-start; }
+  .head-tools, .legend { justify-content: flex-start; }
+}
+.chip svg { flex: none; }
+button:focus-visible, a:focus-visible, .hit:focus-visible, .drow:focus-visible { outline: 2px solid var(--adapter); outline-offset: 2px; }
+.seg { display: inline-flex; flex: none; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; font-size: 13px; color: var(--ink-2); background: transparent; border: 0; padding: 5px 12px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--chip-on); color: var(--chip-on-ink); }
+
+/* tabs */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); }
+.tabs button { font: inherit; font-size: 15px; color: var(--ink-2); background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 8px 12px; cursor: pointer; display: inline-flex; align-items: baseline; gap: 8px; }
+@media (max-width: 560px) { .tabs { gap: 0; } .tabs button { flex: 1; justify-content: center; padding: 8px 6px; } .tabs button span { display: none; } }
+.tabs button span { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.tabs button:hover { color: var(--ink); }
+.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
+.view { display: flex; flex-direction: column; gap: 20px; }
+.view[hidden] { display: none; }
+
+/* stat cards */
+
+/* dot plots */
+.dot-panel { position: relative; padding: 16px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+.dot-head { padding: 0 6px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; align-items: flex-start; }
+.dot-head > div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dots { display: flex; flex-direction: column; --label-w: 12rem; }
+.drow { display: grid; grid-template-columns: var(--label-w) minmax(0, 1fr) 6.5rem; column-gap: 16px; align-items: center; padding: 2px 6px; border-radius: 6px; }
+.drow:not(.dhead):hover, .drow.active { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.drow.avg { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--axis); border-radius: 0; }
+.dgroup { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 6px 2px; border-top: 1px solid var(--grid); margin-top: 4px; }
+.dhead + .dgroup { border-top: 0; margin-top: 0; }
+.dgroup .g-title { font-weight: 600; font-size: 14px; }
+.dgroup .g-sub { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.linkish { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; border-bottom: 1px solid var(--grid); }
+.linkish:hover { border-bottom-color: currentColor; }
+.dlabel { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; line-height: 1.35; }
+.dlabel .l-main { font-size: 14px; overflow-wrap: anywhere; }
+.dlabel .l-main.mono { font-family: var(--font-mono); font-size: 13px; }
+.dlabel .l-sub { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.drow.avg .l-main { font-weight: 600; }
+.dhead .dlabel, .dhead .ddelta { font-size: 12px; color: var(--muted); }
+.strip { position: relative; height: 24px; background-image: linear-gradient(to right, var(--grid) 1px, transparent 1px); box-shadow: inset -1px 0 0 var(--grid); }
+.strip.ticks { height: 18px; background: none; box-shadow: none; }
+.strip .tick { position: absolute; top: 0; transform: translateX(-50%); font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.strip .tick:first-child { transform: none; }
+.strip .tick:last-child { transform: translateX(-100%); }
+.strip .range { position: absolute; top: 50%; height: 2px; margin-top: -1px; background: var(--other); opacity: 0.45; border-radius: 1px; }
+.strip .mk { position: absolute; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; }
+.strip .mk svg { display: block; }
+.strip .mk.faded { opacity: 0.28; }
+.ddelta { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 500; line-height: 1.2; }
+.ddelta small { display: inline; margin-left: 4px; font-family: var(--font-sans); font-size: 11px; font-weight: 400; color: var(--muted); }
+.flag { font-family: var(--font-sans); font-size: 11px; color: var(--ink-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; }
+@media (max-width: 600px) {
+  .drow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; }
+  .drow .strip { grid-column: 1 / -1; grid-row: 2; }
+  .dhead .dlabel { display: none; }
+  .dhead .ddelta { grid-column: 2; grid-row: 1; }
+  .ddelta small { display: inline; margin-left: 4px; }
+}
+
+/* tooltip */
+.tip { position: absolute; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.14); padding: 10px 12px; font-size: 13px; min-width: 240px; max-width: 320px; z-index: 3; }
+.tip .t-head { font-weight: 600; }
+.tip .t-sub { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.tip .t-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 2px 0; }
+.tip .t-row.dim { opacity: 0.55; }
+.tip .t-row .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.tip .t-row.key .n { font-weight: 600; }
+.tip .t-foot { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+/* evaluations */
+.evals { display: grid; grid-template-columns: 15rem minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 820px) { .evals { grid-template-columns: minmax(0, 1fr); } }
+.enav { padding: 10px; display: flex; flex-direction: column; gap: 2px; }
+@media (max-width: 820px) { .enav { flex-direction: row; flex-wrap: wrap; gap: 6px; } .enav .nav-group { display: none; } }
+.nav-group { font-family: var(--font-mono); font-size: 11px; color: var(--muted); padding: 10px 8px 2px; }
+.nav-group:first-child { padding-top: 2px; }
+.enav button { font: inherit; text-align: left; background: none; border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; cursor: pointer; color: var(--ink); display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.enav button:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.enav button[aria-current="true"] { border-color: var(--border); background: color-mix(in srgb, var(--adapter) 9%, transparent); font-weight: 600; }
+.enav button .m { font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); font-weight: 400; white-space: nowrap; }
+.edetail { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.ehead { padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
+.ehead-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px 16px; }
+.ehead-body { display: flex; flex-direction: column; gap: 8px; }
+.edetail-rest { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.ehead h2 { font-size: 20px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--ink-2); }
+.meta code { font-family: var(--font-mono); font-size: 12px; }
+.caveats { margin: 0; padding: 10px 14px 10px 30px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--ink) 3%, transparent); font-size: 13px; color: var(--ink-2); display: flex; flex-direction: column; gap: 4px; }
+.caveats strong { color: var(--ink); }
+
+/* radar */
+.chart-box { position: relative; padding: 12px 8px 8px; }
+.chart-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 8px 0; }
+.chart-head .seg-wrap { display: flex; align-items: center; gap: 8px; }
+.radar { display: block; width: 100%; max-width: 760px; margin: 0 auto; height: auto; overflow: visible; }
+
+/* tables */
+.table-panel { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; }
+thead th { font-weight: 500; font-size: 12px; color: var(--muted); vertical-align: bottom; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+td.best { font-weight: 600; }
+tr.tgroup th { font-family: var(--font-mono); font-size: 11px; font-weight: 400; color: var(--muted); padding-top: 14px; text-align: left; }
+tr.sel th, tr.sel td { background: color-mix(in srgb, var(--adapter) 10%, transparent); }
+tr.spot-row th, tr.spot-row td { background: color-mix(in srgb, var(--spot) 10%, transparent); }
+.mname { display: inline-flex; align-items: center; gap: 8px; }
+td.na { color: var(--muted); text-align: center; }
+details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+
+/* sources */
+.commits { display: flex; flex-direction: column; gap: 14px; }
+.commit-repo h3 { margin: 0 0 6px; font-size: 14px; font-family: var(--font-mono); font-weight: 500; }
+.commit { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 2px 12px; padding: 8px 0; border-top: 1px solid var(--grid); font-size: 14px; }
+.commit .time { grid-row: 1 / span 3; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding-top: 2px; }
+.commit .title { font-weight: 500; }
+.commit .took { grid-column: 2; color: var(--ink-2); font-size: 13px; }
+.commit .files { grid-column: 2; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.method { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--ink-2); max-width: 80ch; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Granite Switch · granitelib r1.0</div>
+    <h1>Granitelib vs decision models</h1>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tab-scoreboard" data-view="scoreboard" aria-controls="panel-scoreboard" aria-selected="true">Scoreboard <span id="count-benchmarks"></span></button>
+    <button type="button" role="tab" id="tab-evals" data-view="evals" aria-controls="panel-evals" aria-selected="false" tabindex="-1">Evaluations <span id="count-cards"></span></button>
+    <button type="button" role="tab" id="tab-sources" data-view="sources" aria-controls="panel-sources" aria-selected="false" tabindex="-1">Sources <span id="count-sources"></span></button>
+  </nav>
+
+  <section class="view" id="panel-scoreboard" role="tabpanel" aria-labelledby="tab-scoreboard">
+    <div class="panel dot-panel" id="sb-panel">
+      <div class="sb-head">
+        <div class="legend-slot" id="sb-legend-slot">
+          <div class="ctl-group legend" id="legend" aria-label="Legend: click Granite to change adapter, or a decision model to compare"></div>
+        </div>
+      </div>
+      <div class="dots" id="sb-dots" style="--label-w: 21rem"></div>
+      <p class="note sb-foot" id="sb-foot" hidden></p>
+      <div class="tip" id="sb-tip" hidden></div>
+    </div>
+  </section>
+
+  <section class="view" id="panel-evals" role="tabpanel" aria-labelledby="tab-evals" hidden>
+    <div class="evals">
+      <nav class="panel enav" id="enav" aria-label="Evaluations"></nav>
+      <div class="edetail" id="edetail"></div>
+    </div>
+  </section>
+
+  <section class="view" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources" hidden>
+    <section class="panel table-panel">
+      <h2>Commits scanned</h2>
+      <p class="note">Every commit to the three repos that added or changed decision-model results, newest first. Only model-card READMEs changed; the scores here come from each card as it stands after the last commit listed. Factuality Detection comes from an open pull request instead, listed under its repo.</p>
+      <div class="commits" id="commits"></div>
+    </section>
+    <section class="panel table-panel">
+      <h2>Which decision models ran where</h2>
+      <div class="table-scroll"><table id="coverage"></table></div>
+    </section>
+    <section class="panel table-panel">
+      <h2>How the numbers are combined</h2>
+      <ul class="method">
+        <li>Charts put every score on a 0–100 scale. Cards that report 0–1 metrics (guardian-core, requirement-check) are multiplied by 100. Source tables keep each card's own numbers.</li>
+        <li>Margin is the Granite adapter's score minus the best decision model on that benchmark, in points. Pick a decision model under Compare to measure against that model instead.</li>
+        <li>Click the Granite chip in the legend to change the adapter; it defaults to the 30B aLoRA. The hallucination detection card publishes LoRA adapters only, so it falls back to the LoRA of the same size and is flagged. "Best per benchmark" takes the highest-scoring adapter on each benchmark, which is how the guardian and requirement-check cards fill their "Best trained adapter" column.</li>
+        <li>On guardian-core, decision-model scores come from the card's comparison table and Granite scores from its per-adapter tables, which report OOD Safety and Function Calling to two decimals.</li>
+        <li>Factuality Detection's scores come from open pull request #45 on granitelib-guardian-r1.0, which had not been merged when they were added here (15 October 2026). Its headline metric is F1 on each test set.</li>
+        <li>The RAG cards compare openjev/openjev, which they do not mark as hosted, plus three hosted models. The core and guardian cards compare four hosted models, including clef-flash, and not openjev.</li>
+      </ul>
+    </section>
+  </section>
+</div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  const NS = "http://www.w3.org/2000/svg";
+  const HF = "https://huggingface.co/ibm-granite/";
+
+  // ---------- data: scores and sources live in data.js (see UPDATING.md) ----------
+  const D = window.GRANITELIB_DATA;
+  const DM = D.DM, REPOS = D.REPOS, COMMITS = D.COMMITS, PRS = D.PRS, EVALS = D.EVALS, OOD_SETS = D.OOD_SETS, OOD = D.OOD;
+  const GRANITE = { id: "granite", marker: "circle", dash: "" };
+  const ADAPTERS = [
+    { key: "30b-alora", label: "30B aLoRA", size: "30b" },
+    { key: "30b-lora", label: "30B LoRA", size: "30b" },
+    { key: "8b-alora", label: "8B aLoRA", size: "8b" },
+    { key: "8b-lora", label: "8B LoRA", size: "8b" },
+    { key: "3b-alora", label: "3B aLoRA", size: "3b" },
+    { key: "3b-lora", label: "3B LoRA", size: "3b" },
+    { key: "best", label: "Best per benchmark" }
+  ];
+  const SIZES = ["3b", "8b", "30b"];
+
+  // parse "0.779" -> { s: "0.779", v: 0.779 }
+  const P = arr => arr.map(s => ({ s, v: parseFloat(s) }));
+  const mapP = o => Object.fromEntries(Object.entries(o).map(([k, a]) => [k, P(a)]));
+  EVALS.forEach(ev => { ev.dm = mapP(ev.dm); ev.granite = mapP(ev.granite); });
+  OOD.granite = mapP(OOD.granite); OOD.dm = mapP(OOD.dm);
+  const OOD_EV = { scale: 1 };
+
+  // ---------- state ----------
+  const store = {
+    get(k) { try { return localStorage.getItem("gl-dm-" + k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem("gl-dm-" + k, v); } catch (e) {} }
+  };
+  let adapterKey = ADAPTERS.some(a => a.key === store.get("adapter")) ? store.get("adapter") : "30b-alora";
+  let scaleKey = store.get("scale") === "full" ? "full" : "zoom";
+  let evalId = EVALS.some(e => e.id === store.get("eval")) ? store.get("eval") : EVALS[0].id;
+  let pinned = null, preview = null;
+  const spot = () => preview || pinned;
+  const dmById = id => DM.find(m => m.id === id);
+  const curAdapter = () => ADAPTERS.find(a => a.key === adapterKey);
+
+  // ---------- helpers ----------
+  function el(tag, attrs, parent) {
+    const n = document.createElementNS(NS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+  function h(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  const nv = (ev, x) => (ev.scale === 1 ? x.v * 100 : x.v);
+  function disp(ev, x) {
+    if (ev.scale !== 1) return x.s;
+    const dp = (x.s.split(".")[1] || "").length;
+    return (x.v * 100).toFixed(Math.min(1, Math.max(0, dp - 2)));
+  }
+  const round1 = d => Math.round(d * 10) / 10;
+  const fmtM = d => (d === 0 ? "0.0" : (d > 0 ? "+" : "−") + Math.abs(d).toFixed(1));
+  const native = (ev, x) => x.s + (ev.pct ? "%" : "");
+
+  function markerPath(kind, x, y, s) {
+    switch (kind) {
+      case "square": return `M${x - s * 0.85},${y - s * 0.85}h${s * 1.7}v${s * 1.7}h${-s * 1.7}Z`;
+      case "diamond": return `M${x},${y - s * 1.2}L${x + s * 1.2},${y}L${x},${y + s * 1.2}L${x - s * 1.2},${y}Z`;
+      case "triangle": return `M${x},${y - s * 1.2}L${x + s * 1.1},${y + s * 0.8}L${x - s * 1.1},${y + s * 0.8}Z`;
+      case "tri-down": return `M${x},${y + s * 1.2}L${x + s * 1.1},${y - s * 0.8}L${x - s * 1.1},${y - s * 0.8}Z`;
+      case "x": return `M${x - s},${y - s}L${x + s},${y + s}M${x + s},${y - s}L${x - s},${y + s}`;
+      default: return `M${x - s},${y}a${s},${s} 0 1,0 ${2 * s},0a${s},${s} 0 1,0 ${-2 * s},0Z`;
+    }
+  }
+  function colorFor(e) {
+    if (e.id === "granite") return "var(--adapter)";
+    return spot() === e.id ? "var(--spot)" : "var(--other)";
+  }
+  function swatch(e, w) {
+    w = w || 26;
+    const s = document.createElementNS(NS, "svg");
+    s.setAttribute("width", w); s.setAttribute("height", 14); s.setAttribute("viewBox", `0 0 ${w} 14`); s.setAttribute("aria-hidden", "true");
+    const c = colorFor(e);
+    el("line", { x1: 1, y1: 7, x2: w - 1, y2: 7, stroke: c, "stroke-width": e.id === "granite" ? 2.5 : 2, "stroke-dasharray": e.dash }, s);
+    el("path", { d: markerPath(e.marker, w / 2, 7, 3.6), fill: e.id === "granite" ? c : "var(--surface)", stroke: c, "stroke-width": 1.6 }, s);
+    return s;
+  }
+  function markerSvg(e, big) {
+    const s = document.createElementNS(NS, "svg");
+    s.setAttribute("width", 16); s.setAttribute("height", 16); s.setAttribute("viewBox", "0 0 16 16"); s.setAttribute("aria-hidden", "true");
+    const c = colorFor(e);
+    if (e.id === "granite") el("circle", { cx: 8, cy: 8, r: 6, fill: c, stroke: "var(--surface)", "stroke-width": 1.5 }, s);
+    else el("path", { d: markerPath(e.marker, 8, 8, big ? 4.8 : 4.2), fill: "var(--surface)", stroke: c, "stroke-width": big ? 2 : 1.6 }, s);
+    return s;
+  }
+
+  // Granite cell for metric mi of an eval, honoring the adapter picker and same-size fallback
+  function graniteOf(src, mi) {
+    if (adapterKey === "best") {
+      let best = null;
+      ADAPTERS.forEach(a => { const arr = src.granite[a.key]; if (arr && (!best || arr[mi].v > best.x.v)) best = { x: arr[mi], label: a.label }; });
+      return best && { x: best.x, label: best.label, best: true };
+    }
+    const a = curAdapter();
+    if (src.granite[a.key]) return { x: src.granite[a.key][mi], label: a.label };
+    const alt = ADAPTERS.find(k => k.size === a.size && k.key !== a.key && src.granite[k.key]);
+    return alt ? { x: src.granite[alt.key][mi], label: alt.label, fallback: a.label } : null;
+  }
+  // chart-ready cells: { granite, dm: { id: { v, disp } } }
+  function cellsFor(ev, mi, src) {
+    src = src || ev;
+    const g = graniteOf(src, mi);
+    const dm = {};
+    DM.forEach(m => { if (src.dm[m.id]) dm[m.id] = { v: nv(ev, src.dm[m.id][mi]), disp: disp(ev, src.dm[m.id][mi]) }; });
+    return {
+      granite: g && { v: nv(ev, g.x), disp: disp(ev, g.x), label: g.label, fallback: g.fallback, best: g.best },
+      dm
+    };
+  }
+  function marginOf(c) {
+    const sp = spot();
+    if (!c.granite) return { d: null };
+    if (sp) {
+      if (!c.dm[sp]) return { d: null, missing: true, names: [dmById(sp).name] };
+      return { d: round1(c.granite.v - c.dm[sp].v), ref: c.dm[sp].v, names: [dmById(sp).name] };
+    }
+    const vals = Object.entries(c.dm);
+    const ref = Math.max(...vals.map(([, x]) => x.v));
+    return { d: round1(c.granite.v - ref), ref, names: vals.filter(([, x]) => x.v === ref).map(([id]) => dmById(id).name) };
+  }
+  const graniteName = c => "Granite " + c.granite.label + (c.granite.fallback ? ` (no ${c.granite.fallback})` : "");
+
+  // ---------- tooltip ----------
+  function fillTip(t, head, sub, c) {
+    const sp = spot();
+    const entries = [];
+    if (c.granite) entries.push({ e: GRANITE, name: graniteName(c), v: c.granite.v, d: c.granite.disp, key: true });
+    DM.forEach(m => { if (c.dm[m.id]) entries.push({ e: m, name: m.name, v: c.dm[m.id].v, d: c.dm[m.id].disp, key: m.id === sp, dim: sp && m.id !== sp }); });
+    entries.sort((a, b) => b.v - a.v);
+    t.textContent = "";
+    t.append(h("div", "t-head", head), h("div", "t-sub", sub));
+    entries.forEach(x => {
+      const row = h("div", "t-row" + (x.key ? " key" : "") + (x.dim ? " dim" : ""));
+      row.append(swatch(x.e, 22), h("span", "n", x.name), h("span", "v", x.d));
+      t.appendChild(row);
+    });
+    const missing = DM.filter(m => !c.dm[m.id]).map(m => m.name);
+    if (missing.length) t.appendChild(h("div", "t-foot", "Not run: " + missing.join(", ")));
+    t.hidden = false;
+  }
+  function placeTip(t, panel, anchorEl, xPct) {
+    const p = panel.getBoundingClientRect(), r = anchorEl.getBoundingClientRect();
+    const ax = r.left - p.left + (xPct / 100) * r.width;
+    const tw = t.offsetWidth, th = t.offsetHeight;
+    let x = ax + 16, y = r.bottom - p.top + 6;
+    if (x + tw > p.width - 6) x = ax - tw - 16;
+    if (y + th > p.height - 6) y = r.top - p.top - th - 6;
+    t.style.left = Math.max(6, x) + "px"; t.style.top = Math.max(6, y) + "px";
+  }
+
+  // ---------- dot plot ----------
+  // rows: { group, groupSub, open } | { label, sub, mono, avg, open, cells }
+  function dotPlot(host, tip, panel, rows, o) {
+    const sp = spot();
+    host.textContent = ""; tip.hidden = true;
+    const n = Math.round((o.hi - o.lo) / o.step);
+    const pos = v => Math.max(0, Math.min(100, ((v - o.lo) / (o.hi - o.lo)) * 100));
+    const head = h("div", "drow dhead");
+    const ticks = h("div", "strip ticks");
+    for (let k = 0; k <= n; k++) {
+      const tk = h("span", "tick", String(Math.round(o.lo + k * o.step)));
+      tk.style.left = (k / n) * 100 + "%";
+      ticks.appendChild(tk);
+    }
+    head.append(h("span", "dlabel", o.labelHead || ""), ticks, h("span", "ddelta", "Margin"));
+    host.appendChild(head);
+
+    rows.forEach(r => {
+      if (r.group) {
+        const g = h("div", "dgroup");
+        if (r.open) { const b = h("button", "linkish g-title", r.group); b.type = "button"; b.addEventListener("click", r.open); g.appendChild(b); }
+        else g.appendChild(h("span", "g-title", r.group));
+        if (r.groupSub) g.appendChild(h("span", "g-sub", r.groupSub));
+        host.appendChild(g);
+        return;
+      }
+      const c = r.cells, m = marginOf(c);
+      const row = h("div", "drow" + (r.avg ? " avg" : ""));
+      row.tabIndex = 0;
+      const lab = h("div", "dlabel");
+      const main = h("span", "l-main" + (r.mono ? " mono" : ""), r.label);
+      if (c.granite && c.granite.fallback) main.appendChild(h("span", "flag", c.granite.label));
+      lab.appendChild(main);
+      if (r.sub) lab.appendChild(h("span", "l-sub", r.sub));
+      const strip = h("div", "strip");
+      strip.style.backgroundSize = `calc(100% / ${n}) 100%`;
+      const ev = Object.values(c.dm).map(x => x.v);
+      if (ev.length) {
+        const band = h("div", "range");
+        band.style.left = pos(Math.min(...ev)) + "%";
+        band.style.width = pos(Math.max(...ev)) - pos(Math.min(...ev)) + "%";
+        strip.appendChild(band);
+      }
+      const order = DM.filter(x => c.dm[x.id] && x.id !== sp).concat(DM.filter(x => c.dm[x.id] && x.id === sp));
+      order.forEach(x => {
+        const mk = h("div", "mk" + (sp && x.id !== sp ? " faded" : ""));
+        mk.style.left = pos(c.dm[x.id].v) + "%";
+        mk.appendChild(markerSvg(x, x.id === sp));
+        strip.appendChild(mk);
+      });
+      if (c.granite) {
+        const mk = h("div", "mk"); mk.style.left = pos(c.granite.v) + "%"; mk.appendChild(markerSvg(GRANITE)); strip.appendChild(mk);
+      }
+      const dl = h("span", "ddelta", m.d === null ? "—" : fmtM(m.d));
+      dl.appendChild(h("small", "", m.d === null ? (m.missing ? "not run" : "") : m.d > 0 ? "ahead" : m.d < 0 ? "behind" : "tied"));
+      row.append(lab, strip, dl);
+      const vals = [c.granite && `${graniteName(c)} ${c.granite.disp}`].concat(DM.filter(x => c.dm[x.id]).map(x => `${x.name} ${c.dm[x.id].disp}`)).filter(Boolean);
+      row.setAttribute("aria-label", `${r.label}${r.sub ? ", " + r.sub : ""}: ${vals.join(", ")}. Margin ${m.d === null ? "not available" : fmtM(m.d)}.`);
+      const show = () => { row.classList.add("active"); fillTip(tip, r.label, r.tipSub || r.sub || "", c); placeTip(tip, panel, strip, c.granite ? pos(c.granite.v) : 50); };
+      const hide = () => { row.classList.remove("active"); tip.hidden = true; };
+      row.addEventListener("pointerenter", show);
+      row.addEventListener("pointerdown", show);
+      row.addEventListener("focus", show);
+      row.addEventListener("pointerleave", hide);
+      row.addEventListener("blur", hide);
+      if (r.open) row.addEventListener("keydown", e => { if (e.key === "Enter") r.open(); });
+      host.appendChild(row);
+    });
+  }
+  function domainFor(cellsList) {
+    const vs = [];
+    cellsList.forEach(c => {
+      if (c.granite) vs.push(c.granite.v);
+      Object.values(c.dm).forEach(x => vs.push(x.v));
+    });
+    let lo = Math.max(0, Math.floor((Math.min(...vs) - 3) / 10) * 10);
+    let hi = Math.min(100, Math.ceil((Math.max(...vs) + 3) / 10) * 10);
+    const step = hi - lo > 60 ? 20 : 10;
+    // widen so the range is a whole number of steps: downward first, then up if the floor is 0
+    lo = Math.max(0, hi - Math.ceil((hi - lo) / step) * step);
+    hi = lo + Math.ceil((hi - lo) / step) * step;
+    return { lo, hi, step };
+  }
+
+  // ---------- controls ----------
+  const legend = document.getElementById("legend");
+  // the Granite chip doubles as the adapter picker: it opens a menu under (or over) the chip
+  const gChip = h("button", "chip adapter-chip"); gChip.type = "button"; gChip.id = "granite-chip";
+  gChip.setAttribute("aria-haspopup", "listbox"); gChip.setAttribute("aria-expanded", "false"); gChip.setAttribute("aria-controls", "adapter-menu");
+  legend.appendChild(gChip);
+  const menu = h("div", "adapter-menu"); menu.id = "adapter-menu"; menu.hidden = true;
+  menu.setAttribute("role", "listbox"); menu.setAttribute("aria-label", "Granite adapter");
+  menu.appendChild(h("div", "menu-title", "Granite 4.1 adapter"));
+  ADAPTERS.forEach(a => {
+    const o = h("button", "menu-opt" + (a.key === "best" ? " best" : "")); o.type = "button"; o.dataset.key = a.key; o.setAttribute("role", "option");
+    const t = h("span", "", a.label);
+    if (a.key === "best") t.appendChild(h("small", "", "Highest-scoring adapter on each benchmark"));
+    o.append(t, h("span", "check", "\u2713"));
+    o.addEventListener("click", () => { adapterKey = a.key; store.set("adapter", a.key); closeMenu(true); refresh(); });
+    menu.appendChild(o);
+  });
+  document.body.appendChild(menu);
+  function placeMenu() {
+    const r = gChip.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(window.innerWidth - menu.offsetWidth - 8, r.left)) + "px";
+    // open downward unless there's no room below the chip
+    if (window.innerHeight - r.bottom >= menu.offsetHeight + 16 || r.top < menu.offsetHeight + 16) { menu.style.bottom = "auto"; menu.style.top = r.bottom + 8 + "px"; }
+    else { menu.style.top = "auto"; menu.style.bottom = window.innerHeight - r.top + 8 + "px"; }
+  }
+  function openMenu(byPointer) {
+    menu.querySelectorAll(".menu-opt").forEach(o => o.setAttribute("aria-selected", o.dataset.key === adapterKey ? "true" : "false"));
+    menu.hidden = false; gChip.setAttribute("aria-expanded", "true");
+    placeMenu();
+    // a mouse or touch open shouldn't paint the keyboard focus ring
+    (menu.querySelector('[aria-selected="true"]') || menu.querySelector(".menu-opt")).focus({ focusVisible: !byPointer });
+  }
+  function closeMenu(focusChip) {
+    if (menu.hidden) return;
+    menu.hidden = true; gChip.setAttribute("aria-expanded", "false");
+    if (focusChip) gChip.focus();
+  }
+  gChip.addEventListener("click", e => { e.stopPropagation(); if (menu.hidden) openMenu(e.detail > 0); else closeMenu(false); });
+  document.addEventListener("click", e => { if (!menu.hidden && !menu.contains(e.target)) closeMenu(false); });
+  menu.addEventListener("keydown", e => {
+    const opts = [...menu.querySelectorAll(".menu-opt")], i = opts.indexOf(document.activeElement);
+    if (e.key === "Escape") { e.preventDefault(); closeMenu(true); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); opts[(i + 1) % opts.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); opts[(i - 1 + opts.length) % opts.length].focus(); }
+    else if (e.key === "Home") { e.preventDefault(); opts[0].focus(); }
+    else if (e.key === "End") { e.preventDefault(); opts[opts.length - 1].focus(); }
+    else if (e.key === "Tab") closeMenu(false);
+  });
+  window.addEventListener("resize", () => { if (!menu.hidden) placeMenu(); });
+  window.addEventListener("scroll", () => { if (!menu.hidden) placeMenu(); }, { passive: true });
+  DM.forEach(m => {
+    const b = h("button", "chip"); b.type = "button"; b.id = "spot-" + m.id; b.setAttribute("aria-pressed", "false");
+    legend.appendChild(b);
+    b.addEventListener("click", () => { pinned = pinned === m.id ? null : m.id; preview = null; refresh(); });
+    b.addEventListener("pointerenter", e => { if (e.pointerType === "mouse") { preview = m.id; refresh(); } });
+    b.addEventListener("pointerleave", e => { if (e.pointerType === "mouse") { preview = null; refresh(); } });
+  });
+  function refreshControls() {
+    const gl = "Granite " + curAdapter().label.replace("Best per benchmark", "best adapter");
+    gChip.textContent = ""; gChip.append(swatch(GRANITE), document.createTextNode(gl), h("span", "caret", "\u25BE"));
+    gChip.setAttribute("aria-label", `${gl}. Change Granite adapter`);
+    DM.forEach(m => {
+      const b = document.getElementById("spot-" + m.id);
+      b.textContent = ""; b.append(swatch(m), document.createTextNode(m.name));
+      b.setAttribute("aria-pressed", pinned === m.id ? "true" : "false");
+    });
+  }
+
+  // ---------- scoreboard ----------
+  const offScoreboard = () => DM.filter(m => m.scoreboard === false).map(m => m.id);
+  function openEval(id) { evalId = id; store.set("eval", id); setView("evals"); refresh(); }
+
+  function renderScoreboard() {
+    const evs = EVALS;
+    const rows = [], cellsList = [];
+    evs.forEach(ev => {
+      rows.push({ group: ev.title, groupSub: `${REPOS[ev.repo].label} / ${ev.card}` + (ev.pr ? ` · open PR #${ev.pr.num}` : ""), open: () => openEval(ev.id) });
+      ev.headline.forEach(mi => {
+        const c = cellsFor(ev, mi);
+        offScoreboard().forEach(id => { delete c.dm[id]; });
+        cellsList.push(c);
+        rows.push({ label: ev.metrics[mi].name, sub: ev.metrics[mi].metric, tipSub: `${ev.title} · ${ev.metrics[mi].metric}`, cells: c, open: () => openEval(ev.id) });
+      });
+    });
+    const dom = domainFor(cellsList);
+    dom.lo = Math.min(dom.lo, 40); dom.hi = 100; dom.step = dom.hi - dom.lo > 60 ? 20 : 10;
+    dotPlot(document.getElementById("sb-dots"), document.getElementById("sb-tip"), document.getElementById("sb-panel"), rows, Object.assign(dom, { labelHead: "Benchmark" }));
+    const off = offScoreboard().map(id => dmById(id).name), foot = document.getElementById("sb-foot");
+    foot.hidden = !off.length;
+    foot.textContent = off.length ? `${off.join(" and ")} ${off.length > 1 ? "are" : "is"} left off the scoreboard; ${off.length > 1 ? "they appear" : "it appears"} on the Evaluations tab.` : "";
+  }
+
+  // ---------- evaluations ----------
+  function evalSummary(ev) {
+    const ms = ev.headline.map(mi => marginOf(cellsFor(ev, mi))).filter(m => m.d !== null);
+    if (!ms.length) return "—";
+    if (ms.length === 1) return fmtM(ms[0].d);
+    const a = ms.filter(m => m.d > 0).length;
+    return `${a}/${ms.length} ahead`;
+  }
+  function renderNav() {
+    const nav = document.getElementById("enav"); nav.textContent = "";
+    Object.entries(REPOS).forEach(([rk, r]) => {
+      nav.appendChild(h("div", "nav-group", r.label));
+      EVALS.filter(e => e.repo === rk).forEach(ev => {
+        const b = h("button"); b.type = "button";
+        b.setAttribute("aria-current", ev.id === evalId ? "true" : "false");
+        b.append(h("span", "", ev.title), h("span", "m", evalSummary(ev)));
+        b.addEventListener("click", () => { evalId = ev.id; store.set("eval", ev.id); writeHash(); refresh(); });
+        nav.appendChild(b);
+      });
+    });
+  }
+
+  const edetail = document.getElementById("edetail");
+  const ehead = h("section", "panel ehead"), etop = h("div", "ehead-top"), etitle = h("h2"), ebody = h("div", "ehead-body"), erest = h("div", "edetail-rest");
+  const evSlot = h("div", "legend-slot"); evSlot.id = "ev-legend-slot";
+  etop.append(etitle, evSlot); ehead.append(etop, ebody); edetail.append(ehead, erest);
+
+  function renderEval() {
+    const ev = EVALS.find(e => e.id === evalId);
+    const host = erest; host.textContent = "";
+    const cardUrl = ev.pr ? ev.pr.file : `${HF}${ev.repo}/blob/main/${ev.card}/README.md#${ev.anchor}`;
+
+    // header
+    etitle.textContent = ev.title;
+    ebody.textContent = "";
+    const head = ebody;
+    head.appendChild(h("p", "lede", ev.task));
+    const meta = h("div", "meta");
+    const a = h("a", "", `${ev.repo} / ${ev.card}`); a.href = cardUrl; a.target = "_blank"; a.rel = "noopener";
+    meta.appendChild(a);
+    if (ev.pr) {
+      const ps = h("span", "", "Source: ");
+      const l = h("a", "", `open PR #${ev.pr.num}`); l.href = ev.pr.url; l.target = "_blank"; l.rel = "noopener"; l.title = ev.pr.title;
+      ps.append(l, document.createTextNode(` by ${ev.pr.by}, opened ${ev.pr.opened} · not merged yet`));
+      meta.appendChild(ps);
+    }
+    const cm = ev.pr ? [] : COMMITS[ev.repo].filter(c => c.files.includes(ev.card + "/README.md"));
+    const cs = h("span", "", cm.length ? "Commits today: " : "");
+    cm.slice().reverse().forEach((c, k) => {
+      const l = h("a", "", c.sha.slice(0, 7)); l.href = `${HF}${ev.repo}/commit/${c.sha}`; l.target = "_blank"; l.rel = "noopener"; l.title = c.title;
+      const code = h("code"); code.appendChild(l);
+      if (k) cs.appendChild(document.createTextNode(", "));
+      cs.appendChild(code);
+    });
+    meta.appendChild(cs);
+    head.appendChild(meta);
+    if (ev.caveats.length) {
+      const ul = h("ul", "caveats");
+      ev.caveats.forEach((t, k) => { const li = h("li"); if (!k) li.appendChild(h("strong", "", ev.pr ? "Note: " : "From the card: ")); li.appendChild(document.createTextNode(t)); ul.appendChild(li); });
+      head.appendChild(ul);
+    }
+
+    (ev.radarGroups || [{ title: "Radar", idx: ev.metrics.map((_, i) => i) }]).forEach(g => {
+      host.appendChild(radarPanel({ title: g.title, axes: g.idx.map(i => ({ name: ev.metrics[i].name, lines: ev.metrics[i].short ? [ev.metrics[i].short] : ev.metrics[i].lines, metric: ev.radarGroups ? "" : ev.metrics[i].metric })),
+        cells: g.idx.map(i => cellsFor(ev, i)), aria: `Radar chart of ${ev.title}${ev.radarGroups ? ", " + g.title : ""}`, tipSub: ev.radarGroups ? g.title + " · ×100" : null }));
+    });
+
+    // metric breakdown
+    const mp = h("section", "panel dot-panel");
+    const mh = h("div", "dot-head"); const mhd = h("div");
+    mhd.append(h("h2", "", ev.benchmarks ? "Benchmarks" : "Metrics"), h("p", "note", ev.scale === 1 ? "Card reports 0–1 scores; shown here ×100." : "Scores as reported on the card, 0–100."));
+    mh.appendChild(mhd); mp.appendChild(mh);
+    const mdots = h("div", "dots"); const mtip = h("div", "tip"); mtip.hidden = true;
+    mp.append(mdots, mtip);
+    host.appendChild(mp);
+    const mrow = mi => ({ label: ev.metrics[mi].name, sub: ev.metrics[mi].metric + (ev.headline.includes(mi) && !ev.benchmarks ? " · headline" : ""), tipSub: ev.metrics[mi].metric, cells: cellsFor(ev, mi) });
+    const mrows = ev.radarGroups ? ev.radarGroups.flatMap(g => [{ group: g.title }].concat(g.idx.map(mrow))) : ev.metrics.map((_, mi) => mrow(mi));
+    dotPlot(mdots, mtip, mp, mrows, Object.assign(domainFor(mrows.filter(r => r.cells).map(r => r.cells)), { labelHead: ev.benchmarks ? "Benchmark" : "Metric" }));
+
+    if (ev.ood) host.appendChild(oodPanel());
+
+    // source table
+    const tp = h("section", "panel table-panel");
+    tp.appendChild(h("h2", "", "Source table"));
+    const sc = h("div", "table-scroll"); const tb = h("table"); sc.appendChild(tb); tp.appendChild(sc);
+    const cols = ev.metrics.map(m => m.name);
+    const trows = [];
+    trows.push({ group: "Decision models" });
+    DM.forEach(m => { if (ev.dm[m.id]) trows.push({ e: m, name: m.name, vals: ev.dm[m.id], cls: spot() === m.id ? "spot-row" : "" }); });
+    [["lora", "LoRA"], ["alora", "aLoRA"]].forEach(([t, tl]) => {
+      const keys = SIZES.map(sz => `${sz}-${t}`).filter(k => ev.granite[k]);
+      if (!keys.length) return;
+      trows.push({ group: `Granite 4.1 ${tl} adapters` });
+      keys.forEach(k => {
+        const used = adapterKey !== "best" && (k === adapterKey || (!ev.granite[adapterKey] && k.split("-")[0] === curAdapter().size));
+        trows.push({ e: GRANITE, name: `Granite 4.1 ${ADAPTERS.find(a => a.key === k).label}`, vals: ev.granite[k], cls: used ? "sel" : "" });
+      });
+    });
+    buildTable(tb, cols, trows, ev);
+    tp.appendChild(h("p", "note", (ev.sourceNote ? ev.sourceNote + " " : "") + "Bold marks the top score per column. The highlighted Granite row is the adapter selected above."));
+    host.appendChild(tp);
+  }
+
+  function buildTable(tb, cols, rows, ev) {
+    tb.textContent = "";
+    const best = cols.map((_, i) => Math.max(...rows.filter(r => r.vals).map(r => r.vals[i].v)));
+    const thead = h("thead"); const hr = h("tr");
+    hr.appendChild(h("th", "", "Model")); cols.forEach(c => hr.appendChild(h("th", "", c)));
+    thead.appendChild(hr); tb.appendChild(thead);
+    const body = h("tbody");
+    rows.forEach(r => {
+      const tr = h("tr", r.group ? "tgroup" : r.cls || "");
+      if (r.group) { const th = h("th", "", r.group); th.colSpan = cols.length + 1; tr.appendChild(th); body.appendChild(tr); return; }
+      const th = h("th"); th.scope = "row"; th.style.fontWeight = 400;
+      const nm = h("span", "mname"); nm.append(swatch(r.e), document.createTextNode(r.name)); th.appendChild(nm); tr.appendChild(th);
+      r.vals.forEach((x, i) => tr.appendChild(h("td", "num" + (x.v === best[i] ? " best" : ""), native(ev, x))));
+      body.appendChild(tr);
+    });
+    tb.appendChild(body);
+    tb.style.minWidth = Math.max(520, 220 + cols.length * 110) + "px";
+  }
+
+  // ---------- OOD per-dataset ----------
+  function oodPanel() {
+    const ev = OOD_EV;
+    const frag = document.createDocumentFragment();
+    const p = h("section", "panel dot-panel");
+    const hd = h("div", "dot-head"); const hdd = h("div");
+    hdd.append(h("h2", "", "OOD Safety margins by dataset"), h("p", "note", "Rows are sorted by Granite's margin over the best decision model."));
+    hd.appendChild(hdd); p.appendChild(hd);
+    const dots = h("div", "dots"); const tip = h("div", "tip"); tip.hidden = true;
+    p.append(dots, tip);
+    // column 0 is the average; datasets are 1..10
+    const src = { granite: OOD.granite, dm: OOD.dm };
+    const cells = OOD_SETS.map((_, i) => cellsFor(ev, i + 1, src));
+    frag.appendChild(radarPanel({ title: "OOD Safety by dataset", axes: OOD_SETS.map(n => ({ name: n, metric: "" })), cells, aria: "Radar chart of OOD Safety F1 on 10 datasets",
+      note: "F1 on each of the 10 out-of-distribution safety datasets, ×100, in the card's order. The card reports these to two decimals." }));
+    const order = OOD_SETS.map((_, i) => i).sort((a, b) => {
+      const ma = marginOf(cells[a]).d, mb = marginOf(cells[b]).d;
+      return (mb === null ? -99 : mb) - (ma === null ? -99 : ma);
+    });
+    const rows = order.map(i => ({ label: OOD_SETS[i], mono: true, tipSub: "F1 ×100", cells: cells[i] }));
+    rows.push({ label: "Average", avg: true, tipSub: "F1 ×100, per-dataset table", cells: cellsFor(ev, 0, src) });
+    const dom = domainFor(rows.map(r => r.cells));
+    dotPlot(dots, tip, p, rows, Object.assign(dom, { labelHead: "Dataset" }));
+    frag.appendChild(p);
+    return frag;
+  }
+
+  // ---------- radar ----------
+  // o: { title, axes: [{ name, lines?, metric }], cells: one chart-ready cell per axis, aria, note? }
+  function radarPanel(o) {
+    const axes = o.axes, cells = o.cells, N = axes.length;
+    const VBW = 700, CX = 350, CY = 0, R = 160;
+    const box = h("section", "panel chart-box");
+    const head = h("div", "chart-head");
+    head.appendChild(h("h2", "", o.title));
+    const sw = h("div", "seg-wrap"); sw.appendChild(h("span", "ctl-label", "Scale"));
+    const seg = h("div", "seg");
+    const vs = [];
+    cells.forEach(c => { if (c.granite) vs.push(c.granite.v); Object.values(c.dm).forEach(x => vs.push(x.v)); });
+    const zlo = Math.max(0, Math.floor((Math.min(...vs) - 4) / 10) * 10), zhi = Math.min(100, Math.ceil((Math.max(...vs) + 4) / 10) * 10);
+    const scales = {
+      zoom: { lo: zlo, hi: zhi, rings: Array.from({ length: (zhi - zlo) / 10 + 1 }, (_, k) => zlo + k * 10), label: `${zlo} – ${zhi}` },
+      full: { lo: 0, hi: 100, rings: [25, 50, 75, 100], label: "0 – 100" }
+    };
+    Object.entries(scales).forEach(([k, sc]) => {
+      const b = h("button", "", sc.label); b.type = "button"; b.setAttribute("aria-pressed", k === scaleKey ? "true" : "false");
+      b.addEventListener("click", () => { scaleKey = k; store.set("scale", k); refresh(); });
+      seg.appendChild(b);
+    });
+    sw.appendChild(seg); head.appendChild(sw); box.appendChild(head);
+    const svg = el("svg", { class: "radar", role: "img", "aria-label": o.aria });
+    box.appendChild(svg);
+    const tip = h("div", "tip"); tip.hidden = true; box.appendChild(tip);
+    const sc = scales[scaleKey];
+    const note = h("p", "note", (o.note ? o.note + " " : "") + (scaleKey === "zoom" ? `The radius starts at ${sc.lo}, which magnifies the gaps between models.` : "Full 0 – 100 scale."));
+    note.style.padding = "0 12px 10px";
+    box.appendChild(note);
+
+    const sp = spot();
+    const ang = i => (-90 + (360 / N) * i) * Math.PI / 180;
+    const rad = v => Math.max(0, R * (v - sc.lo) / (sc.hi - sc.lo));
+    const pt = (i, r) => [CX + r * Math.cos(ang(i)), CY + r * Math.sin(ang(i))];
+    const gGrid = el("g", {}, svg);
+    sc.rings.forEach((t, k) => {
+      const r = rad(t); if (r <= 0) return;
+      el("circle", { cx: CX, cy: CY, r, fill: "none", stroke: k === sc.rings.length - 1 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }, gGrid);
+    });
+    const axisLines = axes.map((_, i) => { const [x, y] = pt(i, R); return el("line", { x1: CX, y1: CY, x2: x, y2: y, stroke: "var(--axis)", "stroke-width": 1 }, gGrid); });
+    // ring labels run along the ray halfway between two lower spokes, so they sit clear of every axis
+    const k0 = Math.floor((N - 1) / 2), ringAng = (ang(k0) + ang(k0 + 1)) / 2;
+    sc.rings.forEach(t => {
+      const r = rad(t);
+      const lbl = el("text", { x: CX + r * Math.cos(ringAng), y: CY + r * Math.sin(ringAng) + 4, "text-anchor": "middle", "font-family": "var(--font-mono)", "font-size": 11,
+        fill: "var(--muted)", stroke: "var(--surface)", "stroke-width": 3, "paint-order": "stroke" }, gGrid);
+      lbl.textContent = String(t);
+    });
+    // axis labels: above, below or beside each spoke's tip, depending on its direction
+    const dense = N > 6, fs = dense ? 12.5 : 14, lh = dense ? 15 : 17;
+    let minY = -R - 20, maxY = R + 20;
+    axes.forEach((m, i) => {
+      const cs = Math.cos(ang(i)), sn = Math.sin(ang(i));
+      const [px, py] = pt(i, R + 14);
+      const anchor = cs > 0.3 ? "start" : cs < -0.3 ? "end" : "middle";
+      const lines = m.lines || [m.name];
+      const blockH = lh * (lines.length - 1) + (m.metric ? 18 : 0);
+      const y1 = sn < -0.45 ? py - 6 - blockH : sn > 0.45 ? py + 14 : py - blockH / 2 + 5;
+      const g = el("g", {}, svg);
+      lines.forEach((line, k) => {
+        const t = el("text", { x: px, y: y1 + lh * k, "text-anchor": anchor, "font-size": fs, "font-weight": dense ? 500 : 600, fill: "var(--ink)",
+          "font-family": dense ? "var(--font-mono)" : "var(--font-sans)" }, g);
+        t.textContent = line;
+      });
+      if (m.metric) {
+        const t2 = el("text", { x: px, y: y1 + lh * (lines.length - 1) + 18, "text-anchor": anchor, "font-size": 12.5, "font-family": "var(--font-mono)", fill: "var(--muted)" }, g);
+        t2.textContent = m.metric;
+      }
+      minY = Math.min(minY, y1 - 16); maxY = Math.max(maxY, y1 + blockH + 6);
+    });
+    svg.setAttribute("viewBox", `0 ${minY} ${VBW} ${maxY - minY}`);
+
+    const present = DM.filter(m => cells.every(c => c.dm[m.id]));
+    const series = present.filter(m => m.id !== sp).concat(present.filter(m => m.id === sp)).map(m => ({ e: m, vals: cells.map(c => c.dm[m.id].v) }));
+    if (cells.every(c => c.granite)) series.push({ e: GRANITE, vals: cells.map(c => c.granite.v) });
+    const gData = el("g", {}, svg);
+    series.forEach(s => {
+      const isG = s.e.id === "granite", isS = s.e.id === sp, c = colorFor(s.e);
+      const g = el("g", { opacity: sp && !isG && !isS ? 0.28 : 1 }, gData);
+      const pts = s.vals.map((v, i) => pt(i, rad(v)));
+      el("polygon", { points: pts.map(q => q.join(",")).join(" "), fill: isG || isS ? c : "none", "fill-opacity": isG ? 0.14 : isS ? 0.1 : 0,
+        stroke: c, "stroke-width": isG ? 2.5 : isS ? 2.25 : 1.5, "stroke-dasharray": s.e.dash, "stroke-linejoin": "round" }, g);
+      pts.forEach(([x, y]) => {
+        if (isG) { el("path", { d: markerPath("circle", x, y, 5.6), fill: "none", stroke: "var(--surface)", "stroke-width": 1.5 }, g); el("path", { d: markerPath("circle", x, y, 4.6), fill: c }, g); }
+        else el("path", { d: markerPath(s.e.marker, x, y, isS ? 4.6 : 4), fill: "var(--surface)", stroke: c, "stroke-width": 1.6 }, g);
+      });
+    });
+    // one hover/focus wedge per axis
+    const gHit = el("g", {}, svg);
+    axes.forEach((m, i) => {
+      const rr = R + 40, a0 = ang(i) - Math.PI / N, a1 = ang(i) + Math.PI / N;
+      const d = `M${CX},${CY}L${CX + rr * Math.cos(a0)},${CY + rr * Math.sin(a0)}A${rr},${rr} 0 0,1 ${CX + rr * Math.cos(a1)},${CY + rr * Math.sin(a1)}Z`;
+      const w = el("path", { d, fill: "transparent", class: "hit", tabindex: 0, role: "img", "aria-label": `${m.name}${m.metric ? ", " + m.metric : ""}` }, gHit);
+      const show = () => {
+        axisLines.forEach((l, k) => { l.setAttribute("stroke", k === i ? "var(--ink-2)" : "var(--axis)"); l.setAttribute("stroke-width", k === i ? 1.5 : 1); });
+        fillTip(tip, m.name, m.metric || o.tipSub || "F1 ×100", cells[i]);
+        const r = svg.getBoundingClientRect(), b = box.getBoundingClientRect(), k = r.width / VBW;
+        const [vx, vy] = pt(i, R * 0.55);
+        let x = r.left - b.left + vx * k, y = r.top - b.top + (vy - minY) * k;
+        const tw = tip.offsetWidth, th = tip.offsetHeight;
+        x = Math.cos(ang(i)) > 0.3 ? x - tw - 24 : x + 24;
+        y -= th / 2;
+        tip.style.left = Math.max(6, Math.min(b.width - tw - 6, x)) + "px"; tip.style.top = Math.max(6, Math.min(b.height - th - 6, y)) + "px";
+      };
+      const hide = () => { tip.hidden = true; axisLines.forEach(l => { l.setAttribute("stroke", "var(--axis)"); l.setAttribute("stroke-width", 1); }); };
+      w.addEventListener("pointerenter", show); w.addEventListener("pointerdown", show); w.addEventListener("focus", show);
+      w.addEventListener("pointerleave", hide); w.addEventListener("blur", hide);
+    });
+    return box;
+  }
+
+  // ---------- sources ----------
+  function renderSources() {
+    const host = document.getElementById("commits"); host.textContent = "";
+    Object.entries(COMMITS).forEach(([repo, list]) => {
+      const sec = h("div", "commit-repo");
+      const t = h("h3"); const a = h("a", "", repo); a.href = HF + repo; a.target = "_blank"; a.rel = "noopener"; t.appendChild(a); sec.appendChild(t);
+      list.forEach(c => {
+        const row = h("div", "commit");
+        const ti = h("div"); const l = h("a", "title", c.title); l.href = `${HF}${repo}/commit/${c.sha}`; l.target = "_blank"; l.rel = "noopener"; ti.appendChild(l);
+        const when = h("span", "time"); when.append(h("span", "", c.date), h("br"), h("span", "", c.time + " UTC"));
+        row.append(when, ti, h("span", "took", c.took), h("span", "files", c.files.join(" · ")));
+        sec.appendChild(row);
+      });
+      (PRS[repo] || []).forEach(pr => {
+        const row = h("div", "commit");
+        const ti = h("div"); const l = h("a", "title", `PR #${pr.num}: ${pr.title}`); l.href = pr.url; l.target = "_blank"; l.rel = "noopener"; ti.appendChild(l);
+        row.append(h("span", "time", "Open PR"), ti, h("span", "took", `Opened ${pr.opened} UTC. ${pr.took}`), h("span", "files", pr.files.join(" · ")));
+        sec.appendChild(row);
+      });
+      host.appendChild(sec);
+    });
+    const tb = document.getElementById("coverage"); tb.textContent = "";
+    const thead = h("thead"); const hr = h("tr"); hr.appendChild(h("th", "", "Decision model"));
+    EVALS.forEach(ev => hr.appendChild(h("th", "", ev.title))); thead.appendChild(hr); tb.appendChild(thead);
+    const body = h("tbody");
+    DM.forEach(m => {
+      const tr = h("tr"); const th = h("th"); th.style.fontWeight = 400;
+      const nm = h("span", "mname"); nm.append(swatch(m));
+      if (m.url) { const a = h("a", "", m.name); a.href = m.url; a.target = "_blank"; a.rel = "noopener"; nm.appendChild(a); } else nm.appendChild(document.createTextNode(m.name + " (not marked hosted)"));
+      th.appendChild(nm); tr.appendChild(th);
+      EVALS.forEach(ev => tr.appendChild(h("td", ev.dm[m.id] ? "num" : "na", ev.dm[m.id] ? "✓" : "—")));
+      body.appendChild(tr);
+    });
+    tb.appendChild(body); tb.style.minWidth = "720px";
+  }
+
+  // ---------- tabs ----------
+  const VIEWS = ["scoreboard", "evals", "sources"];
+  const tabs = VIEWS.map(v => document.getElementById("tab-" + v));
+  let view = "scoreboard";
+  function writeHash() { try { history.replaceState(null, "", "#" + (view === "evals" ? "eval-" + evalId : view)); } catch (e) {} }
+  function setView(v, keepScroll) {
+    if (!keepScroll && v !== view) window.scrollTo(0, 0);
+    view = v;
+    VIEWS.forEach((name, k) => {
+      const on = name === v;
+      tabs[k].setAttribute("aria-selected", on ? "true" : "false");
+      tabs[k].tabIndex = on ? 0 : -1;
+      document.getElementById("panel-" + name).hidden = !on;
+    });
+    document.querySelectorAll(".tip").forEach(t => { t.hidden = true; });
+    closeMenu(false);
+    DM.forEach(m => { document.getElementById("spot-" + m.id).hidden = v === "scoreboard" && m.scoreboard === false; });
+    if (v === "scoreboard" && pinned && offScoreboard().includes(pinned)) { pinned = null; refresh(); }
+    if (v === "evals") evSlot.appendChild(legend);
+    else if (v === "scoreboard") document.getElementById("sb-legend-slot").appendChild(legend);
+    store.set("view", v);
+    writeHash();
+  }
+  tabs.forEach((b, k) => {
+    b.addEventListener("click", () => setView(VIEWS[k]));
+    b.addEventListener("keydown", e => {
+      let n = null;
+      if (e.key === "ArrowRight") n = (k + 1) % tabs.length;
+      else if (e.key === "ArrowLeft") n = (k + tabs.length - 1) % tabs.length;
+      else if (e.key === "Home") n = 0;
+      else if (e.key === "End") n = tabs.length - 1;
+      if (n === null) return;
+      e.preventDefault(); setView(VIEWS[n]); tabs[n].focus();
+    });
+  });
+
+  function refresh() { refreshControls(); renderScoreboard(); renderNav(); renderEval(); }
+
+  const hash = (location.hash || "").slice(1);
+  let initial = store.get("view");
+  if (hash.startsWith("eval-") && EVALS.some(e => e.id === hash.slice(5))) { evalId = hash.slice(5); initial = "evals"; }
+  else if (VIEWS.includes(hash)) initial = hash;
+  const nCommits = Object.values(COMMITS).reduce((n, l) => n + l.length, 0), nPrs = Object.values(PRS).reduce((n, l) => n + l.length, 0);
+  document.getElementById("count-benchmarks").textContent = `${EVALS.reduce((n, e) => n + e.headline.length, 0)} benchmarks`;
+  document.getElementById("count-cards").textContent = `${EVALS.length} cards`;
+  document.getElementById("count-sources").textContent = `${nCommits} commits` + (nPrs ? ` · ${nPrs} PR${nPrs > 1 ? "s" : ""}` : "");
+  renderSources();
+  refresh();
+  setView(VIEWS.includes(initial) ? initial : "scoreboard", true);
+})();
+</script>
+</body>
+</html>
