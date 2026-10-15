@@ -1,4 +1,4 @@
-"""Check spaces/granitelib-evals/data.js before deploying the Granitelib vs Decision Models Space.
+"""Check spaces/granitelib-evals/data.js before deploying the Granitelib Adapters vs Decision Models Space.
 
 Run from the repo root:
 
@@ -133,7 +133,7 @@ def check(d):
         if not ev["granite"]:
             err(f"{name}: no Granite adapter rows")
         elif "30b-alora" not in ev["granite"]:
-            warn(f"{name}: no 30B aLoRA row; the default view will fall back to the 30B LoRA")
+            warn(f"{name}: no 30B aLoRA row; choosing the 30B aLoRA will fall back to the 30B LoRA")
 
         if ev.get("pr"):
             if ev["pr"].get("num") not in pr_nums.get(ev["repo"], set()):

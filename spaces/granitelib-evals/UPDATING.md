@@ -1,4 +1,4 @@
-# Updating the Granitelib vs Decision Models page
+# Updating the Granitelib Adapters vs Decision Models page
 
 The page is static. Every score, citation and caveat lives in [`data.js`](data.js), and
 [`index.html`](index.html) draws everything from it. Refreshing the page with new results
@@ -62,7 +62,7 @@ Fields:
 | `scale` | `1` if the card reports 0–1 scores, `100` if it reports 0–100 |
 | `pct` | `true` if the card prints values with a `%` sign |
 | `benchmarks` | `true` when the metrics are separate benchmarks (labels charts "Benchmark") |
-| `metrics` | One `{ "name", "metric" }` per column. `metric` is the small subheader; `lines` wraps a long radar label; `short` is the radar label inside a `radarGroups` card |
+| `metrics` | One `{ "name", "metric", "detail" }` per column. `name` is the row and radar label. Leave `metric` as `""`; rows don't show subheaders. `detail` is the fuller description shown only in tooltips (metric, split, sample count). `board` optionally renames the row on the Scoreboard alone, e.g. Answerability's "Weighted F1" shows as "MT-RAG" there. `lines` wraps a long radar label; `short` is the radar label inside a `radarGroups` card |
 | `headline` | Indexes into `metrics` that go on the Scoreboard, usually the card's main score |
 | `radarGroups` | Optional. Splits the metrics into several radars, each needing 3 or more |
 | `dm` | Decision-model rows, keyed by `DM` id: `jev`, `msd`, `gpt`, `clef`, `openjev` |

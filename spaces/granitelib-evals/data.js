@@ -1,4 +1,4 @@
-// Scores and sources for the granitelib vs decision models page.
+// Scores and sources for the Granitelib Adapters vs Decision Models page.
 // Everything after the "=" is plain JSON, so scripts/validate_granitelib_evals.py and
 // scripts/check_granitelib_evals.py can read it. See UPDATING.md before editing.
 window.GRANITELIB_DATA = {
@@ -161,17 +161,20 @@ window.GRANITELIB_DATA = {
         {
           "name": "OOD Safety",
           "lines": ["OOD Safety"],
-          "metric": "F1 · avg of 10 datasets"
+          "metric": "",
+          "detail": "F1 · avg of 10 datasets"
         },
         {
-          "name": "RAG Hallucination Detection",
-          "lines": ["RAG Hallucination", "Detection"],
-          "metric": "LM-AggreFact · BAcc"
+          "name": "LM-AggreFact",
+          "lines": ["LM-AggreFact"],
+          "metric": "",
+          "detail": "LM-AggreFact · BAcc"
         },
         {
-          "name": "Function Calling Hallucination Detection",
-          "lines": ["Function Calling", "Hallucination Detection"],
-          "metric": "FC Reward Bench · BAcc"
+          "name": "Function Calling Reward Bench",
+          "lines": ["Function Calling", "Reward Bench"],
+          "metric": "",
+          "detail": "FC Reward Bench · BAcc"
         }
       ],
       "headline": [0, 1, 2],
@@ -212,52 +215,62 @@ window.GRANITELIB_DATA = {
         {
           "name": "ELI5 AUC",
           "short": "AUC",
-          "metric": "ELI5 test · 1,753 samples"
+          "metric": "",
+          "detail": "ELI5 test · 1,753 samples"
         },
         {
           "name": "ELI5 F1",
           "short": "F1",
-          "metric": "ELI5 test · 1,753 samples"
+          "metric": "",
+          "detail": "ELI5 test · 1,753 samples"
         },
         {
           "name": "ELI5 Precision",
           "short": "Precision",
-          "metric": "ELI5 test · 1,753 samples"
+          "metric": "",
+          "detail": "ELI5 test · 1,753 samples"
         },
         {
           "name": "ELI5 Recall",
           "short": "Recall",
-          "metric": "ELI5 test · 1,753 samples"
+          "metric": "",
+          "detail": "ELI5 test · 1,753 samples"
         },
         {
           "name": "ELI5 Accuracy",
           "short": "Accuracy",
-          "metric": "ELI5 test · 1,753 samples"
+          "metric": "",
+          "detail": "ELI5 test · 1,753 samples"
         },
         {
           "name": "BIO AUC",
           "short": "AUC",
-          "metric": "Biographies · out of distribution"
+          "metric": "",
+          "detail": "Biographies · out of distribution"
         },
         {
           "name": "BIO F1",
           "short": "F1",
-          "metric": "Biographies · out of distribution"
+          "metric": "",
+          "detail": "Biographies · out of distribution"
         },
         {
           "name": "BIO Precision",
           "short": "Precision",
-          "metric": "Biographies · out of distribution"
+          "metric": "",
+          "detail": "Biographies · out of distribution"
         },
         {
           "name": "BIO Recall",
           "short": "Recall",
-          "metric": "Biographies · out of distribution"
+          "metric": "",
+          "detail": "Biographies · out of distribution"
         },
         {
           "name": "BIO Accuracy",
           "short": "Accuracy",
-          "metric": "Biographies · out of distribution"
+          "metric": "",
+          "detail": "Biographies · out of distribution"
         }
       ],
       "headline": [1, 6],
@@ -304,17 +317,20 @@ window.GRANITELIB_DATA = {
         {
           "name": "IFEval",
           "lines": ["IFEval"],
-          "metric": "Multi-Constraint · BAcc"
+          "metric": "",
+          "detail": "Multi-Constraint · BAcc"
         },
         {
           "name": "InfoBench-GPT4",
           "lines": ["InfoBench-GPT4"],
-          "metric": "GPT-4 labels · BAcc"
+          "metric": "",
+          "detail": "GPT-4 labels · BAcc"
         },
         {
           "name": "InfoBench-Human",
           "lines": ["InfoBench-Human"],
-          "metric": "Human labels · BAcc"
+          "metric": "",
+          "detail": "Human labels · BAcc"
         }
       ],
       "headline": [0, 1, 2],
@@ -346,19 +362,24 @@ window.GRANITELIB_DATA = {
       "metrics": [
         {
           "name": "Unanswerable F1",
-          "metric": "MT-RAG"
+          "metric": "",
+          "detail": "MT-RAG"
         },
         {
           "name": "Answerable F1",
-          "metric": "MT-RAG"
+          "metric": "",
+          "detail": "MT-RAG"
         },
         {
           "name": "Classification Accuracy",
-          "metric": "MT-RAG"
+          "metric": "",
+          "detail": "MT-RAG"
         },
         {
           "name": "Weighted F1",
-          "metric": "MT-RAG"
+          "board": "MT-RAG",
+          "metric": "",
+          "detail": "MT-RAG"
         }
       ],
       "headline": [3],
@@ -389,15 +410,19 @@ window.GRANITELIB_DATA = {
       "metrics": [
         {
           "name": "Precision",
-          "metric": "RAGTruth QA"
+          "metric": "",
+          "detail": "RAGTruth QA"
         },
         {
           "name": "Recall",
-          "metric": "RAGTruth QA"
+          "metric": "",
+          "detail": "RAGTruth QA"
         },
         {
           "name": "F1",
-          "metric": "RAGTruth QA"
+          "board": "RAGTruth",
+          "metric": "",
+          "detail": "RAGTruth QA"
         }
       ],
       "headline": [2],
@@ -426,19 +451,23 @@ window.GRANITELIB_DATA = {
       "metrics": [
         {
           "name": "Underspecified",
-          "metric": "104 queries"
+          "metric": "",
+          "detail": "104 queries"
         },
         {
           "name": "CLEAR – random",
-          "metric": "200 queries"
+          "metric": "",
+          "detail": "200 queries"
         },
         {
           "name": "CLEAR – hard",
-          "metric": "79 queries"
+          "metric": "",
+          "detail": "79 queries"
         },
         {
           "name": "Overall Accuracy",
-          "metric": "383 queries"
+          "metric": "",
+          "detail": "383 queries"
         }
       ],
       "headline": [3],

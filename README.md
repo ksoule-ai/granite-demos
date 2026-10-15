@@ -40,7 +40,7 @@ There are seven, in two groups.
 | [Thinking Fast and Slow with Granite](spaces/jev-noul-mimic/README.md) | One 3B model doing two kinds of thinking next to TypeSafe AI's Jev. **Thinking Fast** answers yes/no questions with a *noul* (the probability the answer is yes) read from Granite's one-token answer. **Thinking Slow** writes an answer, then scores its own certainty with the uncertainty (UQ) adapter through Mellea. | [`spaces/jev-noul-mimic/`](spaces/jev-noul-mimic/) |
 | [Noul Race](spaces/noul-race/README.md) | Races Granite Switch against Jev and OpenAI's GPT Luna on the same context and questions, with live stopwatches and accuracy against an answer key. An **Obstacle Course** tab mixes yes/no and freeform questions, one at a time; a **Sprint** tab runs yes/no questions in parallel. | [`spaces/noul-race/`](spaces/noul-race/), [`scripts/create_noul_race_space.py`](scripts/create_noul_race_space.py) |
 | [Speech to Decisions](spaces/speech-to-decisions/README.md) | Speak into the microphone and models size up what you're saying while you say it. NVIDIA's Parakeet transcribes the speech. About once a second, gpt-oss-120b says what the speaker is doing in 1 to 5 words, and one Jev request screens the words for harmful content and answers a list of yes/no questions. All three models run on OpenRouter; there's no Granite in this one. | [`spaces/speech-to-decisions/`](spaces/speech-to-decisions/), [`scripts/create_speech_to_decisions_space.py`](scripts/create_speech_to_decisions_space.py) |
-| [Granitelib vs Decision Models](spaces/granitelib-evals/README.md) | Every granitelib evaluation that compares Granite 4.1 adapters with decision models (jev-1.13, microsoft-decision-1, gpt-6-luna-decisions, clef-flash, openjev), gathered from the rag, core and guardian model cards. A scoreboard of eleven benchmarks, a view per card with its caveats and source table, and the commits the numbers came from. A static page; nothing runs live. | [`spaces/granitelib-evals/`](spaces/granitelib-evals/), [`scripts/create_granitelib_evals_space.py`](scripts/create_granitelib_evals_space.py) |
+| [Granitelib Adapters vs Decision Models](spaces/granitelib-evals/README.md) | Every granitelib evaluation that compares Granite 4.1 adapters with decision models (jev-1.13, microsoft-decision-1, gpt-6-luna-decisions, clef-flash, openjev), gathered from the rag, core and guardian model cards. A scoreboard of eleven benchmarks, a view per card with its caveats and source table, and the commits the numbers came from. A static page; nothing runs live. | [`spaces/granitelib-evals/`](spaces/granitelib-evals/), [`scripts/create_granitelib_evals_space.py`](scripts/create_granitelib_evals_space.py) |
 | [ZeroGPU smoke test](spaces/zerogpu-smoke/README.md) | A one-button Space that grabs a ZeroGPU slot and reports the device, VRAM and CUDA version. Used to check ZeroGPU allocation before deploying Activity 2. It doesn't call the endpoint. | [`spaces/zerogpu-smoke/`](spaces/zerogpu-smoke/), [`scripts/create_smoke_space.py`](scripts/create_smoke_space.py) |
 
 Activities 1 and 2 use the same architecture; they differ in **serving model** (persistent
@@ -421,7 +421,7 @@ pip install "huggingface_hub>=0.24" python-dotenv
 python scripts/create_speech_to_decisions_space.py
 ```
 
-## Granitelib vs Decision Models
+## Granitelib Adapters vs Decision Models
 
 [`spaces/granitelib-evals/`](spaces/granitelib-evals/) · [README](spaces/granitelib-evals/README.md)
 
@@ -442,7 +442,7 @@ that hasn't been merged yet.
 - **Sources.** The commits the numbers came from, and which decision models ran on which
   card.
 - **Controls.** The legend sits at the top right of the scoreboard and of each card:
-  click the Granite chip to pick the adapter (default 30B aLoRA), or a decision model to
+  click the Granite chip to pick the adapter (default: best per benchmark), or a decision model to
   compare against.
 
 It's a static Space: `index.html` draws everything from `data.js`, which holds every

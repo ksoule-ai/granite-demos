@@ -10,7 +10,7 @@ body { margin: 0; font-size: 14px; }
 img { max-width: 100%; }
 [hidden] { display: none !important; }
 </style>
-<title>Granitelib vs Decision Models</title>
+<title>Granitelib Adapters vs Decision Models</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -54,7 +54,6 @@ body { background: var(--bg); color: var(--ink); font-family: var(--font-sans); 
 a { color: var(--ink-2); }
 .wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 32px 48px; display: flex; flex-direction: column; gap: 20px; }
 header { display: flex; flex-direction: column; gap: 6px; }
-.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 h1 { margin: 0; font-size: 28px; line-height: 1.2; font-weight: 600; text-wrap: balance; }
 h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.3; text-wrap: balance; }
 .lede { margin: 0; color: var(--ink-2); max-width: 70ch; }
@@ -221,8 +220,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 <body>
 <div class="wrap">
   <header>
-    <div class="eyebrow">Granite Switch · granitelib r1.0</div>
-    <h1>Granitelib vs decision models</h1>
+    <h1>Granitelib Adapters vs Decision Models</h1>
   </header>
 
   <nav class="tabs" role="tablist" aria-label="Views">
@@ -266,7 +264,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
       <ul class="method">
         <li>Charts put every score on a 0–100 scale. Cards that report 0–1 metrics (guardian-core, requirement-check) are multiplied by 100. Source tables keep each card's own numbers.</li>
         <li>Margin is the Granite adapter's score minus the best decision model on that benchmark, in points. Pick a decision model under Compare to measure against that model instead.</li>
-        <li>Click the Granite chip in the legend to change the adapter; it defaults to the 30B aLoRA. The hallucination detection card publishes LoRA adapters only, so it falls back to the LoRA of the same size and is flagged. "Best per benchmark" takes the highest-scoring adapter on each benchmark, which is how the guardian and requirement-check cards fill their "Best trained adapter" column.</li>
+        <li>Click the Granite chip in the legend to change the adapter. It defaults to "Best per benchmark", the highest-scoring adapter on each benchmark, which is how the guardian and requirement-check cards fill their "Best trained adapter" column. Picking a single adapter, such as the 30B aLoRA, shows that adapter everywhere; the hallucination detection card publishes LoRA adapters only, so an aLoRA choice falls back to the LoRA of the same size there and is flagged.</li>
         <li>On guardian-core, decision-model scores come from the card's comparison table and Granite scores from its per-adapter tables, which report OOD Safety and Function Calling to two decimals.</li>
         <li>Factuality Detection's scores come from open pull request #45 on granitelib-guardian-r1.0, which had not been merged when they were added here (15 October 2026). Its headline metric is F1 on each test set.</li>
         <li>The RAG cards compare openjev/openjev, which they do not mark as hosted, plus three hosted models. The core and guardian cards compare four hosted models, including clef-flash, and not openjev.</li>
@@ -308,7 +306,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
     get(k) { try { return localStorage.getItem("gl-dm-" + k); } catch (e) { return null; } },
     set(k, v) { try { localStorage.setItem("gl-dm-" + k, v); } catch (e) {} }
   };
-  let adapterKey = ADAPTERS.some(a => a.key === store.get("adapter")) ? store.get("adapter") : "30b-alora";
+  let adapterKey = ADAPTERS.some(a => a.key === store.get("adapter-v2")) ? store.get("adapter-v2") : "best";
   let scaleKey = store.get("scale") === "full" ? "full" : "zoom";
   let evalId = EVALS.some(e => e.id === store.get("eval")) ? store.get("eval") : EVALS[0].id;
   let pinned = null, preview = null;
@@ -533,7 +531,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
     const t = h("span", "", a.label);
     if (a.key === "best") t.appendChild(h("small", "", "Highest-scoring adapter on each benchmark"));
     o.append(t, h("span", "check", "\u2713"));
-    o.addEventListener("click", () => { adapterKey = a.key; store.set("adapter", a.key); closeMenu(true); refresh(); });
+    o.addEventListener("click", () => { adapterKey = a.key; store.set("adapter-v2", a.key); closeMenu(true); refresh(); });
     menu.appendChild(o);
   });
   document.body.appendChild(menu);
@@ -600,11 +598,11 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
         const c = cellsFor(ev, mi);
         offScoreboard().forEach(id => { delete c.dm[id]; });
         cellsList.push(c);
-        rows.push({ label: ev.metrics[mi].name, sub: ev.metrics[mi].metric, tipSub: `${ev.title} · ${ev.metrics[mi].metric}`, cells: c, open: () => openEval(ev.id) });
+        rows.push({ label: ev.metrics[mi].board || ev.metrics[mi].name, sub: ev.metrics[mi].metric, tipSub: `${ev.title} · ${ev.metrics[mi].detail || ev.metrics[mi].metric}`, cells: c, open: () => openEval(ev.id) });
       });
     });
     const dom = domainFor(cellsList);
-    dom.lo = Math.min(dom.lo, 40); dom.hi = 100; dom.step = dom.hi - dom.lo > 60 ? 20 : 10;
+    dom.lo = 50; dom.hi = 100; dom.step = 10;  // scoreboard axis runs 50–100
     dotPlot(document.getElementById("sb-dots"), document.getElementById("sb-tip"), document.getElementById("sb-panel"), rows, Object.assign(dom, { labelHead: "Benchmark" }));
     const off = offScoreboard().map(id => dmById(id).name), foot = document.getElementById("sb-foot");
     foot.hidden = !off.length;
@@ -674,7 +672,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
     }
 
     (ev.radarGroups || [{ title: "Radar", idx: ev.metrics.map((_, i) => i) }]).forEach(g => {
-      host.appendChild(radarPanel({ title: g.title, axes: g.idx.map(i => ({ name: ev.metrics[i].name, lines: ev.metrics[i].short ? [ev.metrics[i].short] : ev.metrics[i].lines, metric: ev.radarGroups ? "" : ev.metrics[i].metric })),
+      host.appendChild(radarPanel({ title: g.title, axes: g.idx.map(i => ({ name: ev.metrics[i].name, lines: ev.metrics[i].short ? [ev.metrics[i].short] : ev.metrics[i].lines, metric: ev.radarGroups ? "" : ev.metrics[i].metric, detail: ev.metrics[i].detail })),
         cells: g.idx.map(i => cellsFor(ev, i)), aria: `Radar chart of ${ev.title}${ev.radarGroups ? ", " + g.title : ""}`, tipSub: ev.radarGroups ? g.title + " · ×100" : null }));
     });
 
@@ -686,7 +684,7 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
     const mdots = h("div", "dots"); const mtip = h("div", "tip"); mtip.hidden = true;
     mp.append(mdots, mtip);
     host.appendChild(mp);
-    const mrow = mi => ({ label: ev.metrics[mi].name, sub: ev.metrics[mi].metric + (ev.headline.includes(mi) && !ev.benchmarks ? " · headline" : ""), tipSub: ev.metrics[mi].metric, cells: cellsFor(ev, mi) });
+    const mrow = mi => ({ label: ev.metrics[mi].name, sub: ev.metrics[mi].metric, tipSub: ev.metrics[mi].detail || ev.metrics[mi].metric, cells: cellsFor(ev, mi) });
     const mrows = ev.radarGroups ? ev.radarGroups.flatMap(g => [{ group: g.title }].concat(g.idx.map(mrow))) : ev.metrics.map((_, mi) => mrow(mi));
     dotPlot(mdots, mtip, mp, mrows, Object.assign(domainFor(mrows.filter(r => r.cells).map(r => r.cells)), { labelHead: ev.benchmarks ? "Benchmark" : "Metric" }));
 
@@ -853,10 +851,10 @@ details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
     axes.forEach((m, i) => {
       const rr = R + 40, a0 = ang(i) - Math.PI / N, a1 = ang(i) + Math.PI / N;
       const d = `M${CX},${CY}L${CX + rr * Math.cos(a0)},${CY + rr * Math.sin(a0)}A${rr},${rr} 0 0,1 ${CX + rr * Math.cos(a1)},${CY + rr * Math.sin(a1)}Z`;
-      const w = el("path", { d, fill: "transparent", class: "hit", tabindex: 0, role: "img", "aria-label": `${m.name}${m.metric ? ", " + m.metric : ""}` }, gHit);
+      const w = el("path", { d, fill: "transparent", class: "hit", tabindex: 0, role: "img", "aria-label": `${m.name}${m.detail || m.metric ? ", " + (m.detail || m.metric) : ""}` }, gHit);
       const show = () => {
         axisLines.forEach((l, k) => { l.setAttribute("stroke", k === i ? "var(--ink-2)" : "var(--axis)"); l.setAttribute("stroke-width", k === i ? 1.5 : 1); });
-        fillTip(tip, m.name, m.metric || o.tipSub || "F1 ×100", cells[i]);
+        fillTip(tip, m.name, m.detail || m.metric || o.tipSub || "F1 ×100", cells[i]);
         const r = svg.getBoundingClientRect(), b = box.getBoundingClientRect(), k = r.width / VBW;
         const [vx, vy] = pt(i, R * 0.55);
         let x = r.left - b.left + vx * k, y = r.top - b.top + (vy - minY) * k;

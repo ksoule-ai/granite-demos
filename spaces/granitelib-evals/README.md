@@ -1,5 +1,5 @@
 ---
-title: Granitelib vs Decision Models
+title: Granitelib Adapters vs Decision Models
 emoji: 📊
 colorFrom: blue
 colorTo: gray
@@ -14,7 +14,7 @@ models:
 short_description: Granite 4.1 adapters vs decision models across granitelib
 ---
 
-# Granitelib vs Decision Models
+# Granitelib Adapters vs Decision Models
 
 An interactive view of every granitelib evaluation that compares Granite 4.1 LoRA and aLoRA adapters with decision models (jev-1.13, microsoft-decision-1, gpt-6-luna-decisions, clef-flash and openjev/openjev).
 
@@ -23,7 +23,7 @@ The scores are transcribed from the model cards as of 14 October 2026, when the 
 | Repo | Card | Benchmarks |
 |---|---|---|
 | [granitelib-guardian-r1.0](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0) | factuality-detection, from open [PR #45](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0/discussions/45) | ELI5 and Biographies factuality: AUC, F1, precision, recall, accuracy |
-| [granitelib-guardian-r1.0](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0) | guardian-core | OOD Safety (plus 10 per-dataset scores), RAG Hallucination Detection, Function Calling Hallucination Detection |
+| [granitelib-guardian-r1.0](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0) | guardian-core | OOD Safety (plus 10 per-dataset scores), LM-AggreFact, Function Calling Reward Bench |
 | [granitelib-core-r1.0](https://huggingface.co/ibm-granite/granitelib-core-r1.0) | requirement-check | IFEval, InfoBench-GPT4, InfoBench-Human |
 | [granitelib-rag-r1.0](https://huggingface.co/ibm-granite/granitelib-rag-r1.0) | answerability | MT-RAG answerability (4 metrics) |
 | [granitelib-rag-r1.0](https://huggingface.co/ibm-granite/granitelib-rag-r1.0) | hallucination_detection | RAGTruth QA precision, recall, F1 |
@@ -35,7 +35,7 @@ The scores are transcribed from the model cards as of 14 October 2026, when the 
 - **Evaluations** has one view per card, led by a radar of its metrics, with the card's caveats, a chart of every metric with margins and the full source table. Guardian Core adds a 10-axis radar of its per-dataset OOD Safety scores.
 - **Sources** lists each commit the numbers came from and which decision models ran on which card.
 
-The legend at the top right of the scoreboard and of each card holds the controls: click the Granite chip to pick the adapter (default: 30B aLoRA), or click a decision model to compare against it.
+The legend at the top right of the scoreboard and of each card holds the controls: click the Granite chip to pick the adapter (default: best per benchmark), or click a decision model to compare against it.
 
 ## Caveats
 

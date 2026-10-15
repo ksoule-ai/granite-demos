@@ -1,4 +1,4 @@
-"""Create (or update) the Granitelib vs Decision Models Space from spaces/granitelib-evals/.
+"""Create (or update) the Granitelib Adapters vs Decision Models Space from spaces/granitelib-evals/.
 
 Run from the repo root on a machine with your .env present:
 
@@ -46,7 +46,7 @@ def main():
         folder_path=str(SPACE_DIR),
         repo_id=repo_id,
         repo_type="space",
-        commit_message="Granitelib vs Decision Models page",
+        commit_message="Granitelib Adapters vs Decision Models page",
         delete_patterns=["*.css", "*.js"],  # the static template's style.css, and any stale assets
     )
     print(f"Done: https://huggingface.co/spaces/{repo_id}")
